@@ -1,0 +1,63 @@
+services:
+  influxdb:
+    image: influxdb:2.7
+    restart: unless-stopped
+    ports: [ "8086:8086" ]
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_USER}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN}
+    volumes: [ influx_data:/var/lib/influxdb2 ]
+
+  collector:
+    build: ./collector
+    restart: unless-stopped
+    env_file: .env
+    cap_add: [ NET_RAW ] # necessario per ICMP
+    # network_mode: host        # utile per discovery della subnet
+    volumes:
+      - ./config:/config:ro
+    depends_on: [ influxdb ]
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    env_file: .env
+    ports: [ "8000:8000" ]
+    volumes:
+      - ./config:/config
+    depends_on: [ influxdb ]
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    restart: unless-stopped
+    ports: [ "5173:5173" ]
+    environment:
+      API_PROXY: http://api:8000
+    volumes:
+      - ./frontend:/app
+      - frontend_modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    depends_on: [ api ]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    ports: [ "3000:3000" ]
+    environment:
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [ influxdb ]
+
+volumes:
+  influx_data:
+  grafana_data:
+  frontend_modules:

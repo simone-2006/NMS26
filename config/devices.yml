@@ -1,0 +1,22 @@
+devices:
+- name: router
+  host: 192.168.11.1
+  checks:
+  - ping
+  - snmp
+  snmp:
+    version: 2c
+    community: public
+    port: 161
+- name: server-app
+  host: 192.168.11.166
+  checks:
+  - ping
+- name: nas
+  host: 192.168.11.224
+  checks:
+  - ping
+- name: simone-pc
+  host: 192.168.11.91
+  checks:
+  - ping
