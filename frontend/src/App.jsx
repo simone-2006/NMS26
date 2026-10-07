@@ -1,8 +1,126 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { addDevice, deleteDevices, getAlerts, getDevices, getLatency, getSummary, updateDevice } from "./api.js";
-import { MoreVertical, Network, Pen, Plus, Trash, X, Expand } from "lucide-react";
+import { Line } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  Filler,
+  Legend,
+  LinearScale,
+  LineElement,
+  PointElement,
+  TimeScale,
+  Tooltip,
+} from "chart.js";
+import "chartjs-adapter-date-fns";
+import { addDevice, deleteDevices, getAlerts, getDevices, getLatency, getLatencyRange, getSummary, updateDevice } from "./api.js";
+import { MoreVertical, Network, Pen, Plus, Trash, X, Expand, Calendar } from "lucide-react";
+import Input from "./components/ui/Input.jsx";
+import { IPInput } from "./components/ui/Input.jsx";
 
-function RowMenu({ device, onEdit, onDelete }) {
+ChartJS.register(TimeScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
+
+const DETAIL_RANGES = [
+  { id: "15m", label: "15 min" },
+  { id: "1h", label: "1 hour" },
+  { id: "today", label: "Today" },
+  { id: "week", label: "This week" },
+  { id: "year", label: "Last year" },
+  { id: "all", label: "All" },
+];
+
+function detailQuery(id) {
+  const now = new Date();
+  const pack = (from, every) => ({ start: from.toISOString(), every, from, to: now });
+  if (id === "15m") return pack(new Date(now - 15 * 60 * 1000), "30s");
+  if (id === "1h") return pack(new Date(now - 60 * 60 * 1000), "30s");
+  if (id === "today") return pack(new Date(now.getFullYear(), now.getMonth(), now.getDate()), "1m");
+  if (id === "week") {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+    return pack(start, "15m");
+  }
+  if (id === "year") {
+    const start = new Date(now);
+    start.setFullYear(start.getFullYear() - 1);
+    return pack(start, "1h");
+  }
+  return { start: "-10y", every: "1d", from: null, to: now };
+}
+
+function everyToMs(every) {
+  const match = /^(\d+)(s|m|h|d)$/.exec(every);
+  if (!match) return 60 * 1000;
+  const unit = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
+  return Number(match[1]) * unit;
+}
+
+function LatencyChart({ points, rangeId }) {
+  const { from, to, every } = detailQuery(rangeId);
+  const samples = (points ?? [])
+    .filter((p) => p.ms != null && p.t)
+    .map((p) => ({ t: new Date(p.t).getTime(), ms: Number(p.ms) }))
+    .sort((a, b) => a.t - b.t);
+
+  const end = to?.getTime() ?? Date.now();
+  const start = from?.getTime() ?? samples[0]?.t ?? end - 86_400_000;
+  const values = samples.map((p) => p.ms);
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 1;
+  const yPad = (max - min) * 0.08 || 1;
+
+  return (
+    <div className="h-64">
+      <Line
+        data={{
+          datasets: [
+            {
+              data: samples.map((p) => ({ x: p.t, y: p.ms })),
+              borderColor: "#0084FF",
+              backgroundColor: "rgba(0, 132, 255, 0.12)",
+              fill: true,
+              tension: 0.15,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              borderWidth: 1.5,
+              spanGaps: everyToMs(every) * 3,
+            },
+          ],
+        }}
+        options={{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: (items) => new Date(items[0].parsed.x).toLocaleString("it-IT"),
+                label: (item) => `${item.parsed.y.toFixed(1)} ms`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              type: "time",
+              min: start,
+              max: end,
+              ticks: { maxTicksLimit: 6, color: "#4B4B4B" },
+              grid: { color: "#D3D3D3" },
+            },
+            y: {
+              min: values.length ? Math.max(0, min - yPad) : 0,
+              max: values.length ? max + yPad : 1,
+              ticks: { color: "#4B4B4B" },
+              grid: { color: "#D3D3D3" },
+              title: { display: true, text: "ms", color: "#4B4B4B" },
+            },
+          },
+        }}
+      />
+      {samples.length === 0 && <p className="text-sm text-text-secondary">No data in this range</p>}
+    </div>
+  );
+}
+
+function RowMenu({ device, onEdit, onDelete, onExpand }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
   const btnRef = useRef(null);
@@ -61,7 +179,7 @@ function RowMenu({ device, onEdit, onDelete }) {
           <button
             type="button"
             className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left hover:bg-bg"
-            onClick={console.log("Expand details")}
+            onClick={() => { setOpen(false); onExpand(device); }}
           >
             <Expand size={12} /> Expand
           </button>
@@ -93,28 +211,39 @@ function historyPhrase(state) {
 }
 
 function LatencySpark({ points, status }) {
-  const values = (points ?? []).map((p) => p.ms).filter((v) => v != null);
-  const color =
-    status === "UP" ? "text-text-success" : status === "DOWN" ? "text-text-error" : "text-text-secondary";
-  if (values.length === 0) return <span className="text-text-secondary">–</span>;
+  const samples = (points ?? [])
+    .filter((p) => p.ms != null && p.t)
+    .map((p) => ({ x: new Date(p.t).getTime(), y: Number(p.ms) }));
+  if (samples.length === 0) return <span className="text-text-secondary">–</span>;
 
-  const w = 96;
-  const h = 28;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const coords = values.map((v, i) => {
-    const x = values.length === 1 ? w / 2 : (i / (values.length - 1)) * w;
-    const y = h - 2 - ((v - min) / span) * (h - 4);
-    return [x, y];
-  });
-  const d = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+  const color = status === "UP" ? "#36B37E" : status === "DOWN" ? "#FF2626" : "#4B4B4B";
 
   return (
-    <svg width={w} height={h} className={color} role="img" aria-label={`${status}, ultime 6 ore`}>
-      <title>{`${min.toFixed(0)}–${max.toFixed(0)} ms · ${status}`}</title>
-      <path d={d} fill="none" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
+    <div className="h-7 w-24">
+      <Line
+        data={{
+          datasets: [
+            {
+              data: samples,
+              borderColor: color,
+              borderWidth: 1.5,
+              pointRadius: 0,
+              tension: 0.15,
+            },
+          ],
+        }}
+        options={{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: {
+            x: { type: "time", display: false },
+            y: { display: false },
+          },
+          animation: false,
+        }}
+      />
+    </div>
   );
 }
 
@@ -128,6 +257,10 @@ export default function App() {
   const [host, setHost] = useState("");
   const [saving, setSaving] = useState(false);
   const [panel, setPanel] = useState(null);
+  const [detailDevice, setDetailDevice] = useState(null);
+  const [detailRange, setDetailRange] = useState("1h");
+  const [detailPoints, setDetailPoints] = useState([]);
+  const [detailError, setDetailError] = useState("");
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [actionError, setActionError] = useState("");
@@ -141,13 +274,13 @@ export default function App() {
     const series = await Promise.all(
       nextDevices.map(async (d) => {
         try {
-          return [d.name, await getLatency(d.name, 6)];
+          return [d.id, await getLatency(d.id, 6)];
         } catch {
-          return [d.name, []];
+          return [d.id, []];
         }
       }),
     );
-    const alive = new Set(nextDevices.map((d) => d.name));
+    const alive = new Set(nextDevices.map((d) => d.id));
     setError("");
     setSummary(nextSummary);
     setDevices(nextDevices);
@@ -180,6 +313,27 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [panel]);
 
+  useEffect(() => {
+    if (panel !== "details" || !detailDevice) return;
+    let stop = false;
+    const { start, every } = detailQuery(detailRange);
+    setDetailPoints([]);
+    setDetailError("");
+    getLatencyRange(detailDevice.id, start, every)
+      .then((points) => {
+        if (!stop) {
+          setDetailPoints(points);
+          setDetailError("");
+        }
+      })
+      .catch((err) => {
+        if (!stop) setDetailError(String(err));
+      });
+    return () => {
+      stop = true;
+    };
+  }, [panel, detailDevice, detailRange]);
+
   function toggleSelected(deviceName) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -197,9 +351,16 @@ export default function App() {
     setPanel("add");
   }
 
+  function openDetails(device) {
+    setDetailDevice(device);
+    setDetailRange("1h");
+    setDetailError("");
+    setPanel("details");
+  }
+
   function openEdit(device) {
     setActionError("");
-    setEditing(device.name);
+    setEditing(device.id);
     setName(device.name);
     setHost(device.host);
     setPanel("edit");
@@ -242,12 +403,12 @@ export default function App() {
 
   async function onDelete() {
     if (selected.size === 0) return;
-    const names = [...selected];
-    if (!window.confirm(`Eliminare ${names.length} device?`)) return;
+    const ids = [...selected];
+    if (!window.confirm(`Eliminare ${ids.length} device?`)) return;
     setSaving(true);
     setActionError("");
     try {
-      await deleteDevices(names);
+      await deleteDevices(ids);
       setSelected(new Set());
       await refresh();
     } catch (err) {
@@ -262,10 +423,10 @@ export default function App() {
     setSaving(true);
     setActionError("");
     try {
-      await deleteDevices([device.name]);
+      await deleteDevices([device.id]);
       setSelected((prev) => {
         const next = new Set(prev);
-        next.delete(device.name);
+        next.delete(device.id);
         return next;
       });
       await refresh();
@@ -280,8 +441,8 @@ export default function App() {
 
 
   return (
-    <div className="flex min-h-screen bg-bg">
-      <div className="min-w-0 flex-1 p-4">
+    <div className="flex h-screen bg-bg">
+      <div className="min-w-0 flex-1 p-4 overflow-auto">
         <div className="bg-bg-secondary rounded-lg p-4 flex flex-col">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-brand font-bold text-2xl">
@@ -374,7 +535,7 @@ export default function App() {
                   <th className="py-2 px-4 font-semibold text-text-secondary">Host</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Status</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Latency (ms)</th>
-                  <th className="py-2 px-4 font-semibold text-text-secondary">Loss (%)</th>
+                  <th className="py-2 px-4 font-semibold text-text-secondary">Loss</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Last 6h</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Last ping</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Actions</th>
@@ -382,12 +543,12 @@ export default function App() {
               </thead>
               <tbody>
                 {devices.map((d) => (
-                  <tr key={d.name} className="border-b last:border-b-0 border-bg">
+                  <tr key={d.id} className="border-b last:border-b-0 border-bg">
                     <td className="py-2 px-4">
                       <input
                         type="checkbox"
-                        checked={selected.has(d.name)}
-                        onChange={() => toggleSelected(d.name)}
+                        checked={selected.has(d.id)}
+                        onChange={() => toggleSelected(d.id)}
                         aria-label={`Seleziona ${d.name}`}
                       />
                     </td>
@@ -413,9 +574,9 @@ export default function App() {
                       </span>
                     </td>
                     <td className="py-2 px-4">{d.latency_ms ?? "–"}</td>
-                    <td className="py-2 px-4">{d.loss_pct ?? "–"}</td>
+                    <td className="py-2 px-4">{d.loss_pct + "%" ?? "–"}</td>
                     <td className="py-2 px-4">
-                      <LatencySpark points={history[d.name]} status={d.status} />
+                      <LatencySpark points={history[d.id]} status={d.status} />
                     </td>
                     <td className="py-2 px-4">
                       {d.last_ping ? (() => {
@@ -432,7 +593,7 @@ export default function App() {
                       })() : "–"}
                     </td>
                     <td className="py-2 px-4">
-                      <RowMenu device={d} onEdit={openEdit} onDelete={onDeleteOne} />
+                      <RowMenu device={d} onEdit={openEdit} onDelete={onDeleteOne} onExpand={openDetails} />
                     </td>
 
                   </tr>
@@ -496,9 +657,9 @@ export default function App() {
       </div>
 
       <aside
-        className={`shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel ? "w-80 border-l border-border" : "w-0"}`}
+        className={`shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel === "details" ? "w-[36rem] border-l border-border" : panel ? "w-80 border-l border-border" : "w-0"}`}
       >
-        <div className="w-80 p-4">
+        <div className={`${panel === "details" ? "w-[36rem]" : "w-80"} p-4`}>
           {(panel === "add" || panel === "edit") && (
             <>
               <div className="flex items-center justify-between mb-4">
@@ -510,20 +671,19 @@ export default function App() {
               <form onSubmit={panel === "add" ? onAdd : onEdit} className="flex flex-col gap-3">
                 <label className="flex flex-col gap-1 text-sm text-text">
                   Name
-                  <input
+                  <Input
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     required
-                    className="border border-border rounded-lg px-2 py-1"
-                  />
+                  >
+                  </Input>
                 </label>
                 <label className="flex flex-col gap-1 text-sm text-text">
                   Host
-                  <input
+                  <IPInput
                     value={host}
                     onChange={(e) => setHost(e.target.value)}
                     required
-                    className="border border-border rounded-lg px-2 py-1"
                   />
                 </label>
                 {actionError && <p className="text-xs text-text-error">{actionError}</p>}
@@ -535,6 +695,46 @@ export default function App() {
                   {panel === "add" ? "Add" : "Save"}
                 </button>
               </form>
+            </>
+          )}
+          {panel === "details" && detailDevice && (
+            <>
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-bold text-text">{detailDevice.name}</h2>
+                  <p className="text-sm text-text-secondary">{detailDevice.host}</p>
+                </div>
+                <button type="button" onClick={() => setPanel(null)} aria-label="Chiudi" className="cursor-pointer text-text-secondary">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="mb-4 flex items-center">
+                <div className="flex items-center rounded-lg border border-border px-2 py-1 gap-1">
+                  <Calendar size={16} className="text-text-secondary mr-3" />
+
+                  <div className="w-px h-3 bg-border" />
+
+                  <select
+                    value={detailRange}
+                    onChange={e => setDetailRange(e.target.value)}
+                    className="bg-transparent outline-none text-xs text-text cursor-pointer"
+                  >
+                    {DETAIL_RANGES.map(range => (
+                      <option key={range.id} value={range.id}>
+                        {range.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+
+              {detailError ? (
+                <p className="text-xs text-text-error">{detailError}</p>
+              ) : (
+                <LatencyChart points={detailPoints} rangeId={detailRange} />
+              )}
             </>
           )}
         </div>

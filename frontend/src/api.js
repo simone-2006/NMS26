@@ -10,6 +10,11 @@ export const getAlerts = () => send("/api/alerts");
 export const getLatency = (name, hours = 6) =>
   send(`/api/devices/${encodeURIComponent(name)}/latency?hours=${hours}`);
 
+export const getLatencyRange = (name, start, every) =>
+  send(
+    `/api/devices/${encodeURIComponent(name)}/latency?start=${encodeURIComponent(start)}&every=${encodeURIComponent(every)}`,
+  );
+
 export const addDevice = (device) =>
   send("/api/devices", {
     method: "POST",
@@ -17,16 +22,16 @@ export const addDevice = (device) =>
     body: JSON.stringify(device),
   });
 
-export const updateDevice = (name, device) =>
-  send(`/api/devices/${encodeURIComponent(name)}`, {
+export const updateDevice = (id, device) =>
+  send(`/api/devices/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(device),
   });
 
-export const deleteDevices = (names) =>
+export const deleteDevices = (ids) =>
   send("/api/devices", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names }),
+    body: JSON.stringify({ ids }),
   });

@@ -10,15 +10,16 @@ states: dict[str, DeviceState] = {}
 
 async def check_device(dev: dict):
     name, host = dev["name"], dev["host"]
-    st = states.setdefault(name, DeviceState())
+    device_id = dev.get("id") or name
+    st = states.setdefault(device_id, DeviceState())
 
     if "ping" in dev.get("checks", ["ping"]):
         r = await ping_host(host, config.PING_COUNT)
-        await write_ping(name, host, r)
+        await write_ping(device_id, host, r)
         prev = st.status
         change = st.update(r["alive"], config.DOWN_AFTER, config.UP_AFTER)
         if st.status != prev:
-            await write_status(name, host, st.status)
+            await write_status(device_id, host, st.status)
         if change == "DOWN":
             await notify(f"🔴 {name} ({host}) è DOWN")
         elif change == "UP":

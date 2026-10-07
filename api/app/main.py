@@ -1,5 +1,7 @@
 import os
 import re
+import uuid
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 import yaml
@@ -25,6 +27,10 @@ BUCKET = _require_env("INFLUX_BUCKET")
 DEVICES_PATH = "/config/devices.yml"
 ALLOWED_CHECKS = {"ping", "snmp"}
 DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+LATENCY_START_RE = re.compile(
+    r"^(?:-\d+[smhdwy]|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))$"
+)
+LATENCY_EVERY = {"30s", "1m", "5m", "15m", "30m", "1h", "6h", "1d"}
 
 client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
 
@@ -75,12 +81,16 @@ class DeviceIn(BaseModel):
 
 
 class DeviceDelete(BaseModel):
-    names: list[str] = Field(min_length=1)
+    ids: list[str] = Field(min_length=1)
 
 
 class DeviceUpdate(BaseModel):
     name: str = Field(min_length=1)
     host: str = Field(min_length=1)
+
+
+def _device_id(device: dict) -> str:
+    return device.get("id") or device["name"]
 
 
 def _devices_state():
@@ -108,12 +118,13 @@ def _devices_state():
 
     return [
         {
+            "id": _device_id(d),
             "name": d["name"],
             "host": d["host"],
-            "status": status.get(d["name"], "UNKNOWN"),
-            "latency_ms": ping.get(d["name"], {}).get("rtt_avg"),
-            "loss_pct": ping.get(d["name"], {}).get("loss"),
-            "last_ping": ping.get(d["name"], {}).get("time"),
+            "status": status.get(_device_id(d), "UNKNOWN"),
+            "latency_ms": ping.get(_device_id(d), {}).get("rtt_avg"),
+            "loss_pct": ping.get(_device_id(d), {}).get("loss"),
+            "last_ping": ping.get(_device_id(d), {}).get("time"),
         }
         for d in cfg
     ]
@@ -139,9 +150,11 @@ def add_device(body: DeviceIn):
     if any(d.get("name") == name for d in data["devices"]):
         raise HTTPException(409, "device già presente")
 
-    data["devices"].append({"name": name, "host": host, "checks": checks})
+    device_id = uuid.uuid4().hex[:12]
+    data["devices"].append({"id": device_id, "name": name, "host": host, "checks": checks})
     _write_config(data)
     return {
+        "id": device_id,
         "name": name,
         "host": host,
         "status": "UNKNOWN",
@@ -150,10 +163,10 @@ def add_device(body: DeviceIn):
     }
 
 
-@app.patch("/devices/{name}")
-def update_device(name: str, body: DeviceUpdate):
-    if not DEVICE_NAME_RE.fullmatch(name):
-        raise HTTPException(400, "nome non valido")
+@app.patch("/devices/{device_id}")
+def update_device(device_id: str, body: DeviceUpdate):
+    if not DEVICE_NAME_RE.fullmatch(device_id):
+        raise HTTPException(400, "id non valido")
     new_name, host = body.name.strip(), body.host.strip()
     if not new_name or not host:
         raise HTTPException(400, "nome e host obbligatori")
@@ -161,30 +174,31 @@ def update_device(name: str, body: DeviceUpdate):
         raise HTTPException(400, "nome non valido")
 
     data = _read_config()
-    current = next((d for d in data["devices"] if d.get("name") == name), None)
+    current = next((d for d in data["devices"] if _device_id(d) == device_id), None)
     if current is None:
         raise HTTPException(404, "device non trovato")
-    if new_name != name and any(d.get("name") == new_name for d in data["devices"]):
+    if new_name != current["name"] and any(d.get("name") == new_name for d in data["devices"]):
         raise HTTPException(409, "device già presente")
 
+    current["id"] = device_id
     current["name"] = new_name
     current["host"] = host
     _write_config(data)
-    return {"name": new_name, "host": host}
+    return {"id": device_id, "name": new_name, "host": host}
 
 
 @app.delete("/devices")
 def delete_devices(body: DeviceDelete):
-    names = []
-    for raw in body.names:
-        name = raw.strip()
-        if not DEVICE_NAME_RE.fullmatch(name):
-            raise HTTPException(400, "nome non valido")
-        names.append(name)
+    ids = []
+    for raw in body.ids:
+        device_id = raw.strip()
+        if not DEVICE_NAME_RE.fullmatch(device_id):
+            raise HTTPException(400, "id non valido")
+        ids.append(device_id)
 
     data = _read_config()
-    drop = set(names)
-    kept = [d for d in data["devices"] if d.get("name") not in drop]
+    drop = set(ids)
+    kept = [d for d in data["devices"] if _device_id(d) not in drop]
     removed = len(data["devices"]) - len(kept)
     if removed == 0:
         raise HTTPException(404, "nessun device trovato")
@@ -215,19 +229,35 @@ def alerts(limit: int = 50):
         from(bucket: "{BUCKET}") |> range(start: -30d)
           |> filter(fn: (r) => r._measurement == "status")
           |> group() |> sort(columns: ["_time"], desc: true) |> limit(n: {int(limit)})''')
-    return [{"t": r.get_time().isoformat(), "device": r["device"], "state": r.get_value()} for r in rows]
+    names = {_device_id(d): d["name"] for d in _read_config()["devices"]}
+    return [
+        {"t": r.get_time().isoformat(), "device": names.get(r["device"], r["device"]), "state": r.get_value()}
+        for r in rows
+    ]
 
 
-@app.get("/devices/{name}/latency")
-def latency(name: str, hours: int = 24):
-    if not DEVICE_NAME_RE.fullmatch(name):
-        raise HTTPException(400, "nome non valido")
-    hours = max(1, min(int(hours), 168))
+def _latency_range(hours: int | None, start: str | None, every: str) -> tuple[str, str]:
+    if start:
+        if not LATENCY_START_RE.fullmatch(start) or every not in LATENCY_EVERY:
+            raise HTTPException(400, "intervallo non valido")
+        if start.startswith("-"):
+            return start, every
+        moment = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ"), every
+    window = 24 if hours is None else max(1, min(int(hours), 168))
+    return f"-{window}h", "5m"
+
+
+@app.get("/devices/{device_id}/latency")
+def latency(device_id: str, hours: int | None = None, start: str | None = None, every: str = "5m"):
+    if not DEVICE_NAME_RE.fullmatch(device_id):
+        raise HTTPException(400, "id non valido")
+    range_start, window = _latency_range(hours, start, every)
     q = f'''
     from(bucket: "{BUCKET}")
-      |> range(start: -{hours}h)
-      |> filter(fn: (r) => r._measurement == "ping" and r.device == "{name}" and r._field == "rtt_avg")
-      |> aggregateWindow(every: 5m, fn: mean, createEmpty: false)
+      |> range(start: {range_start})
+      |> filter(fn: (r) => r._measurement == "ping" and r.device == "{device_id}" and r._field == "rtt_avg")
+      |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)
     '''
     tables = client.query_api().query(q)
     return [{"t": r.get_time().isoformat(), "ms": r.get_value()} for t in tables for r in t.records]

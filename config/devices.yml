@@ -1,5 +1,6 @@
 devices:
-- name: router
+- id: Router
+  name: Router
   host: 192.168.11.1
   checks:
   - ping
@@ -8,23 +9,28 @@ devices:
     version: 2c
     community: public
     port: 161
-- name: server-app
+- id: server-app
+  name: Server-app
   host: 192.168.11.166
   checks:
   - ping
-- name: nas
+- id: nas
+  name: nas
   host: 192.168.11.224
   checks:
   - ping
-- name: simone-pc
+- id: simone-pc
+  name: simone-pc
   host: 192.168.11.91
   checks:
   - ping
-- name: DNS-GOOGLE
+- id: DNS-GOOGLE
+  name: DNS-GOOGLE
   host: 1.1.1.1
   checks:
   - ping
-- name: Iphone-Simone
-  host: 192.168.11.89
+- id: PC-marcello-polichem
+  name: PC-marcello-polichem
+  host: 10.20.10.32
   checks:
   - ping
