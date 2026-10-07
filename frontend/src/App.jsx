@@ -635,8 +635,16 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {devices.map((d) => (
-                  <tr key={d.id} className="border-b last:border-b-0 border-bg">
+                {devices.map((d) => {
+                  const openInSidebar =
+                    (panel === "details" && detailDevice?.id === d.id) ||
+                    (panel === "edit" && editing === d.id);
+                  return (
+                    <tr
+                      key={d.id}
+                      aria-current={openInSidebar ? "true" : undefined}
+                      className={`border-b last:border-b-0 border-bg transition-colors ${openInSidebar ? "bg-brand/10" : ""}`}
+                    >
                     <td className="py-2 px-4">
                       <input
                         type="checkbox"
@@ -674,7 +682,8 @@ export default function App() {
                     </td>
 
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -696,9 +705,9 @@ export default function App() {
       </div>
 
       <aside
-        className={`shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel === "details" ? "w-[36rem] border-l border-border" : panel ? "w-80 border-l border-border" : "w-0"}`}
+        className={`max-h-screen shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel === "details" ? "w-[36rem] border-l border-border" : panel ? "w-80 border-l border-border" : "w-0"}`}
       >
-        <div className={`${panel === "details" ? "w-[36rem]" : "w-80"} p-4`}>
+        <div className={`${panel === "details" ? "w-[36rem]" : "w-80"} h-screen max-h-screen p-4 overflow-auto`}>
           {(panel === "add" || panel === "edit") && (
             <>
               <div className="flex items-center justify-between mb-4">
@@ -778,7 +787,7 @@ export default function App() {
                 <LatencyChart points={detailPoints} rangeId={detailRange} />
               )}
 
-              <div className="mt-6">
+              <div className="mt-6 overflow-auto">
                 <div className="text-sm font-bold text-text">Alerts</div>
                 <p className="mb-3 text-xs text-text-secondary">Latest status changes</p>
                 <AlertTimeline alerts={detailAlerts} showDevice={false} />
