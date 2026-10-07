@@ -11,10 +11,9 @@ import {
   Tooltip,
 } from "chart.js";
 import "chartjs-adapter-date-fns";
-import { addDevice, deleteDevices, getAlerts, getDevices, getLatency, getLatencyRange, getSummary, updateDevice } from "./api.js";
-import { MoreVertical, Network, Pen, Plus, Trash, X, Expand, Calendar, Loader2 } from "lucide-react";
+import { addDevice, checkDevices, deleteDevices, getAlerts, getDevices, getLatency, getLatencyRange, getNeighbors, getSummary, updateDevice } from "./api.js";
+import { MoreVertical, Network, Pen, Plus, Trash, X, Expand, Calendar, Loader2, Search, Check, RefreshCw } from "lucide-react";
 import Input from "./components/ui/Input.jsx";
-import { IPInput } from "./components/ui/Input.jsx";
 
 ChartJS.register(TimeScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
@@ -26,6 +25,127 @@ const DETAIL_RANGES = [
   { id: "year", label: "Last year" },
   { id: "all", label: "All" },
 ];
+
+function macKey(value) {
+  const hex = String(value || "").toLowerCase().replace(/[^0-9a-f]/g, "");
+  return hex.length === 12 ? hex : "";
+}
+
+function compareIp(a, b) {
+  const left = a.split(".").map(Number);
+  const right = b.split(".").map(Number);
+  for (let i = 0; i < 4; i++) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId }) {
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef(null);
+  const q = query.trim();
+  const matches = [...neighbors]
+    .filter((n) => !q || n.ip.includes(q))
+    .sort((a, b) => compareIp(a.ip, b.ip));
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex cursor-pointer items-center gap-1.5 self-start text-xs font-medium text-brand"
+      >
+        <Search size={14} />
+        Find MAC from IP
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-bg p-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-medium text-text">Find MAC from IP</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-text-secondary">
+            Search the ARP table. A result fills the MAC field only.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Hide MAC lookup"
+          className="cursor-pointer text-text-secondary"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="mt-2 flex items-center gap-2 rounded-lg border border-border bg-bg-secondary px-2">
+        <Search size={14} className="shrink-0 text-text-secondary" />
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          placeholder="Filter by IP"
+          aria-label="IP to look up"
+          className="min-w-0 flex-1 bg-transparent py-1 text-sm outline-none"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => onQuery("")}
+            aria-label="Clear IP search"
+            className="cursor-pointer text-text-secondary"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+      {neighbors.length === 0 && (
+        <p className="mt-2 text-[11px] leading-4 text-text-secondary">
+          The ARP table is empty. Keep the export script running.
+        </p>
+      )}
+      {neighbors.length > 0 && matches.length === 0 && (
+        <p className="mt-2 text-[11px] leading-4 text-text-secondary">No MAC for this IP.</p>
+      )}
+      {matches.length > 0 && (
+        <ul className="mt-2 flex max-h-40 flex-col gap-1 overflow-auto">
+          {matches.map((n) => {
+            const used = macKey(mac) === macKey(n.mac);
+            const owner = devices.find((d) => d.id !== exceptId && macKey(d.mac) === macKey(n.mac));
+            return (
+              <li key={n.mac}>
+                <button
+                  type="button"
+                  onClick={() => { if (!owner) onUse(n.mac); }}
+                  disabled={Boolean(owner)}
+                  className={`flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left ${owner ? "cursor-not-allowed border-transparent bg-bg-secondary opacity-70" : used ? "cursor-pointer border-brand bg-bg-secondary" : "cursor-pointer border-transparent bg-bg-secondary hover:border-border"}`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-mono text-xs text-text">{n.ip}</span>
+                    <span className="block truncate font-mono text-[11px] text-text-secondary">{n.mac}</span>
+                  </span>
+                  {owner ? (
+                    <span className="max-w-24 shrink-0 truncate text-[11px] text-text-secondary" title={owner.name}>{owner.name}</span>
+                  ) : used ? (
+                    <Check size={14} className="shrink-0 text-brand" />
+                  ) : (
+                    <span className="shrink-0 text-[11px] font-medium text-brand">Use</span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function detailQuery(id) {
   const now = new Date();
@@ -207,6 +327,7 @@ function dayLabel(date) {
 function historyPhrase(state) {
   if (state === "DOWN") return "Went down";
   if (state === "UP") return "Came up";
+  if (state === "UNRESOLVED") return "Address unresolved";
   return "Became unknown";
 }
 
@@ -222,10 +343,11 @@ function StatusBadge({ status }) {
 
   const up = status === "UP";
   const down = status === "DOWN";
+  const label = status === "UNRESOLVED" ? "Unresolved" : (status ?? "Unknown");
   return (
     <span className="inline-flex items-center font-medium">
       <span className={`mr-2 inline-block h-2 w-2 rounded-full ${up ? "bg-text-success" : down ? "bg-text-error" : "bg-text-secondary"}`} />
-      <span className={up ? "text-text-success" : down ? "text-text-error" : "text-text-secondary"}>{status ?? "Unknown"}</span>
+      <span className={up ? "text-text-success" : down ? "text-text-error" : "text-text-secondary"}>{label}</span>
     </span>
   );
 }
@@ -318,6 +440,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
+  const [mac, setMac] = useState("");
+  const [neighbors, setNeighbors] = useState([]);
+  const [lookupIp, setLookupIp] = useState("");
   const [saving, setSaving] = useState(false);
   const [panel, setPanel] = useState(null);
   const [detailDevice, setDetailDevice] = useState(null);
@@ -328,6 +453,8 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [actionError, setActionError] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [dataTick, setDataTick] = useState(0);
 
   const refresh = useCallback(async () => {
     const [nextSummary, nextDevices, nextAlerts] = await Promise.all([
@@ -369,6 +496,21 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
+    if (panel !== "add" && panel !== "edit") return;
+    let stop = false;
+    getNeighbors()
+      .then((rows) => {
+        if (!stop) setNeighbors(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (!stop) setNeighbors([]);
+      });
+    return () => {
+      stop = true;
+    };
+  }, [panel]);
+
+  useEffect(() => {
     if (!panel) return;
     const onKey = (e) => {
       if (e.key === "Escape") setPanel(null);
@@ -396,13 +538,19 @@ export default function App() {
     return () => {
       stop = true;
     };
-  }, [panel, detailDevice?.id, detailRange]);
+  }, [panel, detailDevice?.id, detailRange, dataTick]);
 
   useEffect(() => {
     if (!detailDevice) return;
     const fresh = devices.find((d) => d.id === detailDevice.id);
     if (!fresh) return;
-    if (fresh.status === detailDevice.status && fresh.name === detailDevice.name && fresh.host === detailDevice.host) return;
+    if (
+      fresh.status === detailDevice.status &&
+      fresh.name === detailDevice.name &&
+      fresh.host === detailDevice.host &&
+      fresh.mac === detailDevice.mac &&
+      fresh.current_ip === detailDevice.current_ip
+    ) return;
     setDetailDevice(fresh);
   }, [devices, detailDevice]);
 
@@ -425,7 +573,7 @@ export default function App() {
       stop = true;
       clearInterval(id);
     };
-  }, [panel, detailDevice?.id]);
+  }, [panel, detailDevice?.id, dataTick]);
 
   function toggleSelected(deviceName) {
     setSelected((prev) => {
@@ -441,6 +589,8 @@ export default function App() {
     setEditing(null);
     setName("");
     setHost("");
+    setMac("");
+    setLookupIp("");
     setPanel("add");
   }
 
@@ -455,7 +605,9 @@ export default function App() {
     setActionError("");
     setEditing(device.id);
     setName(device.name);
-    setHost(device.host);
+    setHost(device.host || "");
+    setMac(device.mac || "");
+    setLookupIp("");
     setPanel("edit");
   }
 
@@ -464,9 +616,19 @@ export default function App() {
     setSaving(true);
     setActionError("");
     try {
-      await addDevice({ name: name.trim(), host: host.trim(), checks: ["ping"] });
+      if (!host.trim() && !mac.trim()) {
+        setActionError("Serve un host oppure un MAC");
+        return;
+      }
+      const taken = devices.find((d) => macKey(d.mac) && macKey(d.mac) === macKey(mac));
+      if (taken) {
+        setActionError(`MAC già usato da ${taken.name}`);
+        return;
+      }
+      await addDevice({ name: name.trim(), host: host.trim(), mac: mac.trim(), checks: ["ping"] });
       setName("");
       setHost("");
+      setMac("");
       setPanel(null);
       await refresh();
     } catch (err) {
@@ -481,9 +643,19 @@ export default function App() {
     setSaving(true);
     setActionError("");
     try {
-      await updateDevice(editing, { name: name.trim(), host: host.trim() });
+      if (!host.trim() && !mac.trim()) {
+        setActionError("Serve un host oppure un MAC");
+        return;
+      }
+      const taken = devices.find((d) => d.id !== editing && macKey(d.mac) && macKey(d.mac) === macKey(mac));
+      if (taken) {
+        setActionError(`MAC già usato da ${taken.name}`);
+        return;
+      }
+      await updateDevice(editing, { name: name.trim(), host: host.trim(), mac: mac.trim() });
       setName("");
       setHost("");
+      setMac("");
       setEditing(null);
       setPanel(null);
       await refresh();
@@ -530,17 +702,41 @@ export default function App() {
     }
   }
 
-  // console.log(summary)
-
+  async function onUpdateAll() {
+    if (checking) return;
+    setChecking(true);
+    setError("");
+    try {
+      await checkDevices();
+      await refresh();
+      if (panel === "add" || panel === "edit") {
+        const rows = await getNeighbors().catch(() => []);
+        setNeighbors(Array.isArray(rows) ? rows : []);
+      }
+      setDataTick((n) => n + 1);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setChecking(false);
+    }
+  }
 
   return (
     <div className="flex h-screen bg-bg">
       <div className="min-w-0 flex-1 p-4 overflow-auto">
         <div className="bg-bg-secondary rounded-lg p-4 flex flex-col">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-brand font-bold text-2xl">
-              <Network />
-              <span>NMS26 LAN Management System</span>
+            <div className="flex items-center gap-3">
+              <span className="text-text font-bold text-2xl">NMS26 LAN Management System</span>
+              <button
+                type="button"
+                onClick={onUpdateAll}
+                disabled={checking}
+                className="flex cursor-pointer items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <RefreshCw size={12} className={checking ? "animate-spin" : ""} />
+                {checking ? "Checking…" : "Update all"}
+              </button>
             </div>
             <div className="flex items-center gap-2">
               <span
@@ -626,6 +822,8 @@ export default function App() {
                   <th className="py-2 px-4 font-semibold text-text-secondary"></th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Name</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Host</th>
+                  <th className="py-2 px-4 font-semibold text-text-secondary">MAC</th>
+                  <th className="py-2 px-4 font-semibold text-text-secondary">Current IP</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Status</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Latency (ms)</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Loss</th>
@@ -654,12 +852,14 @@ export default function App() {
                       />
                     </td>
                     <td className="py-2 px-4">{d.name}</td>
-                    <td className="py-2 px-4">{d.host}</td>
+                    <td className="py-2 px-4">{d.host || "–"}</td>
+                    <td className="py-2 px-4">{d.mac || "–"}</td>
+                    <td className="py-2 px-4">{d.current_ip || "–"}</td>
                     <td className="py-2 px-4">
                       <StatusBadge status={d.status} />
                     </td>
                     <td className="py-2 px-4">{d.latency_ms ?? "–"}</td>
-                    <td className="py-2 px-4">{d.loss_pct + "%" ?? "–"}</td>
+                    <td className="py-2 px-4">{d.loss_pct == null ? "–" : `${d.loss_pct}%`}</td>
                     <td className="py-2 px-4">
                       <LatencySpark points={history[d.id]} status={d.status} />
                     </td>
@@ -705,9 +905,9 @@ export default function App() {
       </div>
 
       <aside
-        className={`max-h-screen shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel === "details" ? "w-[36rem] border-l border-border" : panel ? "w-80 border-l border-border" : "w-0"}`}
+        className={`max-h-screen shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel === "details" ? "w-[36rem] border-l border-border" : panel ? "w-96 border-l border-border" : "w-0"}`}
       >
-        <div className={`${panel === "details" ? "w-[36rem]" : "w-80"} h-screen max-h-screen p-4 overflow-auto`}>
+        <div className={`${panel === "details" ? "w-[36rem]" : "w-96"} h-screen max-h-screen p-4 overflow-auto`}>
           {(panel === "add" || panel === "edit") && (
             <>
               <div className="flex items-center justify-between mb-4">
@@ -728,12 +928,32 @@ export default function App() {
                 </label>
                 <label className="flex flex-col gap-1 text-sm text-text">
                   Host
-                  <IPInput
+                  <Input
                     value={host}
                     onChange={(e) => setHost(e.target.value)}
-                    required
+                    placeholder="IP or hostname"
                   />
                 </label>
+                <label className="flex flex-col gap-1 text-sm text-text">
+                  MAC
+                  <Input
+                    value={mac}
+                    onChange={(e) => setMac(e.target.value)}
+                    placeholder="aa:bb:cc:dd:ee:ff"
+                  />
+                </label>
+                <MacLookup
+                  query={lookupIp}
+                  onQuery={setLookupIp}
+                  neighbors={neighbors}
+                  mac={mac}
+                  onUse={setMac}
+                  devices={devices}
+                  exceptId={editing}
+                />
+                <p className="text-xs text-text-secondary">
+                  A DHCP reservation on the router keeps the address stable. A hostname works when the router updates DNS. If the address changes, leave Host empty and set the MAC: each check pings only the current lease, never an old IP.
+                </p>
                 {actionError && <p className="text-xs text-text-error">{actionError}</p>}
                 <button
                   type="submit"
@@ -750,7 +970,9 @@ export default function App() {
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-bold text-text">{detailDevice.name}</h2>
-                  <p className="text-sm text-text-secondary">{detailDevice.host}</p>
+                  <p className="text-sm text-text-secondary">{detailDevice.host || "No fixed host"}</p>
+                  <p className="text-sm text-text-secondary">{detailDevice.mac || "No MAC"}</p>
+                  <p className="text-sm text-text-secondary">{detailDevice.current_ip || "No current IP"}</p>
                   <div className="mt-1">
                     <StatusBadge status={detailDevice.status} />
                   </div>

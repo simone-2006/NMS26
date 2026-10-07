@@ -11,9 +11,15 @@ async def write_ping(device: str, host: str, r: dict):
     p = (
         Point("ping").tag("device", device).tag("host", host)
         .field("alive", int(r["alive"]))
-        .field("rtt_avg", float(r["rtt_avg"]))
         .field("loss", float(r["loss"]))
     )
+    if r["alive"]:
+        p.field("rtt_avg", float(r["rtt_avg"]))
+    await asyncio.to_thread(_write.write, config.INFLUX_BUCKET, config.INFLUX_ORG, p)
+
+
+async def write_current_ip(device: str, ip: str):
+    p = Point("current_ip").tag("device", device).field("ip", ip or "-")
     await asyncio.to_thread(_write.write, config.INFLUX_BUCKET, config.INFLUX_ORG, p)
 
 

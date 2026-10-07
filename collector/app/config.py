@@ -20,6 +20,8 @@ INFLUX_BUCKET = _require_env("INFLUX_BUCKET")
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
 
+DHCP_LEASES_PATH = os.getenv("DHCP_LEASES_PATH", "")
+ARP_CACHE_PATH = os.getenv("ARP_CACHE_PATH", "/config/arp-cache.txt")
 INTERVAL = int(os.getenv("CHECK_INTERVAL", 30))
 PING_COUNT = int(os.getenv("PING_COUNT", 5))
 DOWN_AFTER = int(os.getenv("DOWN_AFTER_FAILS", 3))

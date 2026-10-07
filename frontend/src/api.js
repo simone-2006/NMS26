@@ -6,6 +6,8 @@ async function send(path, options) {
 
 export const getSummary = () => send("/api/summary");
 export const getDevices = () => send("/api/devices");
+export const getNeighbors = () => send("/api/neighbors");
+export const checkDevices = () => send("/api/check", { method: "POST" });
 export const getAlerts = (limit = 50, device) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (device) q.set("device", device);

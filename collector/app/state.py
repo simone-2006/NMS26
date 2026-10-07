@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass
 class DeviceState:
-    status: str = "UNKNOWN"   # UNKNOWN | UP | DOWN
+    status: str = "UNKNOWN"   # UNKNOWN | UP | DOWN | UNRESOLVED
     fails: int = 0
     oks: int = 0
 
@@ -22,3 +22,12 @@ class DeviceState:
                 self.status = "DOWN"
                 return "DOWN"
         return None
+
+    def mark_unresolved(self) -> str | None:
+        """Nessun IP confermato in questo ciclo. Non è un down."""
+        self.fails = 0
+        self.oks = 0
+        if self.status == "UNRESOLVED":
+            return None
+        self.status = "UNRESOLVED"
+        return "UNRESOLVED"

@@ -17,9 +17,11 @@ services:
     restart: unless-stopped
     env_file: .env
     cap_add: [ NET_RAW ] # necessario per ICMP
-    # network_mode: host        # utile per discovery della subnet
+    # network_mode: host        # serve se i device a MAC si risolvono solo via ARP dell'host
     volumes:
       - ./config:/config:ro
+      # Lease dnsmasq, solo per i device identificati dal MAC. Poi imposta DHCP_LEASES_PATH.
+      # - /var/lib/misc/dnsmasq.leases:/leases/dnsmasq.leases:ro
     depends_on: [ influxdb ]
 
   api:
