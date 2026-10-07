@@ -78,6 +78,11 @@ class DeviceDelete(BaseModel):
     names: list[str] = Field(min_length=1)
 
 
+class DeviceUpdate(BaseModel):
+    name: str = Field(min_length=1)
+    host: str = Field(min_length=1)
+
+
 def _devices_state():
     cfg = _read_config()["devices"]
 
@@ -143,6 +148,29 @@ def add_device(body: DeviceIn):
         "latency_ms": None,
         "loss_pct": None,
     }
+
+
+@app.patch("/devices/{name}")
+def update_device(name: str, body: DeviceUpdate):
+    if not DEVICE_NAME_RE.fullmatch(name):
+        raise HTTPException(400, "nome non valido")
+    new_name, host = body.name.strip(), body.host.strip()
+    if not new_name or not host:
+        raise HTTPException(400, "nome e host obbligatori")
+    if not DEVICE_NAME_RE.fullmatch(new_name):
+        raise HTTPException(400, "nome non valido")
+
+    data = _read_config()
+    current = next((d for d in data["devices"] if d.get("name") == name), None)
+    if current is None:
+        raise HTTPException(404, "device non trovato")
+    if new_name != name and any(d.get("name") == new_name for d in data["devices"]):
+        raise HTTPException(409, "device già presente")
+
+    current["name"] = new_name
+    current["host"] = host
+    _write_config(data)
+    return {"name": new_name, "host": host}
 
 
 @app.delete("/devices")

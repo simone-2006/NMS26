@@ -1,6 +1,96 @@
-import { useCallback, useEffect, useState } from "react";
-import { addDevice, deleteDevices, getAlerts, getDevices, getLatency, getSummary } from "./api.js";
-import { Edit, Expand, Network, Pen, Plus, Trash, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { addDevice, deleteDevices, getAlerts, getDevices, getLatency, getSummary, updateDevice } from "./api.js";
+import { MoreVertical, Network, Pen, Plus, Trash, X, Expand } from "lucide-react";
+
+function RowMenu({ device, onEdit, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onKey = (e) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [open]);
+
+  function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const rect = btnRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, left: rect.right });
+    setOpen(true);
+  }
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={toggle}
+        aria-label={`Azioni ${device.name}`}
+        className="cursor-pointer rounded-lg border-border p-1 text-text-secondary hover:bg-bg"
+      >
+        <MoreVertical size={14} />
+      </button>
+      {open && pos && (
+        <div
+          className="fixed z-20 min-w-36 rounded-lg border border-border bg-bg-secondary py-1 text-xs"
+          style={{ top: pos.top, left: pos.left, transform: "translateX(-100%)" }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left hover:bg-bg"
+            onClick={() => { setOpen(false); onEdit(device); }}
+          >
+            <Pen size={12} /> Edit
+          </button>
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left hover:bg-bg"
+            onClick={console.log("Expand details")}
+          >
+            <Expand size={12} /> Expand
+          </button>
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-text-error hover:bg-bg"
+            onClick={() => { setOpen(false); onDelete(device); }}
+          >
+            <Trash size={12} /> Delete
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function dayLabel(date) {
+  const start = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = (start(new Date()) - start(date)) / 86400000;
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return date.toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function historyPhrase(state) {
+  if (state === "DOWN") return "Went down";
+  if (state === "UP") return "Came up";
+  return "Became unknown";
+}
 
 function LatencySpark({ points, status }) {
   const values = (points ?? []).map((p) => p.ms).filter((v) => v != null);
@@ -38,6 +128,7 @@ export default function App() {
   const [host, setHost] = useState("");
   const [saving, setSaving] = useState(false);
   const [panel, setPanel] = useState(null);
+  const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [actionError, setActionError] = useState("");
 
@@ -98,6 +189,22 @@ export default function App() {
     });
   }
 
+  function openAdd() {
+    setActionError("");
+    setEditing(null);
+    setName("");
+    setHost("");
+    setPanel("add");
+  }
+
+  function openEdit(device) {
+    setActionError("");
+    setEditing(device.name);
+    setName(device.name);
+    setHost(device.host);
+    setPanel("edit");
+  }
+
   async function onAdd(e) {
     e.preventDefault();
     setSaving(true);
@@ -106,6 +213,24 @@ export default function App() {
       await addDevice({ name: name.trim(), host: host.trim(), checks: ["ping"] });
       setName("");
       setHost("");
+      setPanel(null);
+      await refresh();
+    } catch (err) {
+      setActionError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onEdit(e) {
+    e.preventDefault();
+    setSaving(true);
+    setActionError("");
+    try {
+      await updateDevice(editing, { name: name.trim(), host: host.trim() });
+      setName("");
+      setHost("");
+      setEditing(null);
       setPanel(null);
       await refresh();
     } catch (err) {
@@ -124,6 +249,25 @@ export default function App() {
     try {
       await deleteDevices(names);
       setSelected(new Set());
+      await refresh();
+    } catch (err) {
+      setActionError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onDeleteOne(device) {
+    if (!window.confirm(`Eliminare ${device.name}?`)) return;
+    setSaving(true);
+    setActionError("");
+    try {
+      await deleteDevices([device.name]);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(device.name);
+        return next;
+      });
       await refresh();
     } catch (err) {
       setActionError(String(err));
@@ -195,7 +339,7 @@ export default function App() {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => { setActionError(""); setPanel("add"); }}
+                onClick={openAdd}
                 className="flex items-center gap-1 cursor-pointer hover:bg-bg px-2 py-1 rounded-lg border border-border text-xs"
               >
                 <Plus size={12} />
@@ -287,19 +431,8 @@ export default function App() {
                           : dateObj.toLocaleString("it-IT");
                       })() : "–"}
                     </td>
-                    <td className="flex items-center gap-2 justify-center">
-                      <button
-                        type="button"
-                        className="flex items-center gap-1 cursor-pointer hover:bg-bg px-2 py-1 rounded-lg border border-border text-xs"
-                      >
-                        <Pen size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        className="flex items-center gap-1 cursor-pointer hover:bg-bg px-2 py-1 rounded-lg border border-border text-xs"
-                      >
-                        <Expand size={12} />
-                      </button>
+                    <td className="py-2 px-4">
+                      <RowMenu device={d} onEdit={openEdit} onDelete={onDeleteOne} />
                     </td>
 
                   </tr>
@@ -315,67 +448,66 @@ export default function App() {
 
 
 
-        {/* <h2>Riepilogo</h2>
-      <pre>{summary ? JSON.stringify(summary, null, 2) : "…"}</pre> */}
-
-        {/* <h2>Aggiungi device</h2>
-      <form onSubmit={onAdd}>
-        <label>
-          Nome <input value={name} onChange={(e) => setName(e.target.value)} required />
-        </label>{" "}
-        <label>
-          Host <input value={host} onChange={(e) => setHost(e.target.value)} required />
-        </label>{" "}
-        <button type="submit" disabled={saving}>Aggiungi</button>
-      </form>  */}
-
-        {/* <h2>Device</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Nome</th>
-            <th>Host</th>
-            <th>Stato</th>
-            <th>Latenza ms</th>
-            <th>Loss %</th>
-          </tr>
-        </thead>
-        <tbody>
-          {devices.map((d) => (
-            <tr key={d.name}>
-              <td>{d.name}</td>
-              <td>{d.host}</td>
-              <td>{d.status}</td>
-              <td>{d.latency_ms ?? "—"}</td>
-              <td>{d.loss_pct ?? "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table> */}
-
-        {/* <h2>Alert</h2>
-      <ul>
-        {alerts.map((a, i) => (
-          <li key={`${a.t}-${a.device}-${i}`}>
-            {a.t}  {a.device}  {a.state}
-          </li>
-        ))}
-      </ul> */}
+        <div className="mt-6 bg-bg-secondary rounded-lg p-4">
+          <div className="mb-4">
+            <div className="text-lg font-bold text-text">History</div>
+            <p className="text-sm text-text-secondary">Status changes, newest first</p>
+          </div>
+          {alerts.length === 0 ? (
+            <p className="text-sm text-text-secondary">No status changes yet</p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {alerts.reduce((groups, a) => {
+                const when = new Date(a.t);
+                const label = dayLabel(when);
+                const last = groups[groups.length - 1];
+                if (!last || last.label !== label) groups.push({ label, items: [{ ...a, when }] });
+                else last.items.push({ ...a, when });
+                return groups;
+              }, []).map((group) => (
+                <section key={group.label}>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">{group.label}</p>
+                  <ol className="ml-1 border-l border-border">
+                    {group.items.map((a, i) => (
+                      <li key={`${a.t}-${a.device}-${i}`} className="relative pb-3 pl-4 last:pb-0">
+                        <span className={`absolute left-0 top-1.5 h-2 w-2 -translate-x-1/2 rounded-full ${a.state === "UP" ? "bg-text-success" : a.state === "DOWN" ? "bg-text-error" : "bg-text-secondary"
+                          }`} />
+                        <div className="flex items-baseline gap-3">
+                          <time className="w-16 shrink-0 text-xs text-text-secondary">
+                            {a.when.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                          </time>
+                          <p className="text-sm">
+                            <span className="font-medium text-text">{a.device}</span>{" "}
+                            <span className={
+                              a.state === "UP" ? "text-text-success" : a.state === "DOWN" ? "text-text-error" : "text-text-secondary"
+                            }>
+                              {historyPhrase(a.state)}
+                            </span>
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <aside
         className={`shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel ? "w-80 border-l border-border" : "w-0"}`}
       >
         <div className="w-80 p-4">
-          {panel === "add" && (
+          {(panel === "add" || panel === "edit") && (
             <>
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-bold text-text">Add device</h2>
+                <h2 className="text-lg font-bold text-text">{panel === "add" ? "Add device" : "Edit device"}</h2>
                 <button type="button" onClick={() => setPanel(null)} aria-label="Chiudi" className="cursor-pointer text-text-secondary">
                   <X size={16} />
                 </button>
               </div>
-              <form onSubmit={onAdd} className="flex flex-col gap-3">
+              <form onSubmit={panel === "add" ? onAdd : onEdit} className="flex flex-col gap-3">
                 <label className="flex flex-col gap-1 text-sm text-text">
                   Name
                   <input
@@ -394,12 +526,13 @@ export default function App() {
                     className="border border-border rounded-lg px-2 py-1"
                   />
                 </label>
+                {actionError && <p className="text-xs text-text-error">{actionError}</p>}
                 <button
                   type="submit"
                   disabled={saving}
                   className="cursor-pointer rounded-lg border border-border px-2 py-1 text-sm hover:bg-bg disabled:opacity-40"
                 >
-                  Add
+                  {panel === "add" ? "Add" : "Save"}
                 </button>
               </form>
             </>

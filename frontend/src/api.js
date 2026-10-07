@@ -17,6 +17,13 @@ export const addDevice = (device) =>
     body: JSON.stringify(device),
   });
 
+export const updateDevice = (name, device) =>
+  send(`/api/devices/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(device),
+  });
+
 export const deleteDevices = (names) =>
   send("/api/devices", {
     method: "DELETE",

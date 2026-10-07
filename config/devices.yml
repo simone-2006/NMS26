@@ -24,3 +24,7 @@ devices:
   host: 1.1.1.1
   checks:
   - ping
+- name: Iphone-Simone
+  host: 192.168.11.89
+  checks:
+  - ping
