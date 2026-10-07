@@ -121,7 +121,7 @@ def _devices_state():
             "id": _device_id(d),
             "name": d["name"],
             "host": d["host"],
-            "status": status.get(_device_id(d), "UNKNOWN"),
+            "status": status.get(_device_id(d), "LOADING"),
             "latency_ms": ping.get(_device_id(d), {}).get("rtt_avg"),
             "loss_pct": ping.get(_device_id(d), {}).get("loss"),
             "last_ping": ping.get(_device_id(d), {}).get("time"),
@@ -157,7 +157,7 @@ def add_device(body: DeviceIn):
         "id": device_id,
         "name": name,
         "host": host,
-        "status": "UNKNOWN",
+        "status": "LOADING",
         "latency_ms": None,
         "loss_pct": None,
     }
@@ -217,18 +217,24 @@ def summary():
         "total": len(devs),
         "online": len(online),
         "offline": sum(d["status"] == "DOWN" for d in devs),
-        "unknown": sum(d["status"] == "UNKNOWN" for d in devs),
+        "unknown": sum(d["status"] in ("UNKNOWN", "LOADING") for d in devs),
         "avg_latency_ms": round(sum(lat) / len(lat), 1) if lat else None,
         "avg_loss_pct": round(sum(loss) / len(loss), 2) if loss else None,
     }
 
 
 @app.get("/alerts")
-def alerts(limit: int = 50):
+def alerts(limit: int = 50, device: str | None = None):
+    limit = max(1, min(int(limit), 200))
+    device_filter = ""
+    if device is not None:
+        if not DEVICE_NAME_RE.fullmatch(device):
+            raise HTTPException(400, "id non valido")
+        device_filter = f' and r.device == "{device}"'
     rows = _rows(f'''
         from(bucket: "{BUCKET}") |> range(start: -30d)
-          |> filter(fn: (r) => r._measurement == "status")
-          |> group() |> sort(columns: ["_time"], desc: true) |> limit(n: {int(limit)})''')
+          |> filter(fn: (r) => r._measurement == "status"{device_filter})
+          |> group() |> sort(columns: ["_time"], desc: true) |> limit(n: {limit})''')
     names = {_device_id(d): d["name"] for d in _read_config()["devices"]}
     return [
         {"t": r.get_time().isoformat(), "device": names.get(r["device"], r["device"]), "state": r.get_value()}

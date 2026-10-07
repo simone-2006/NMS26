@@ -6,7 +6,11 @@ async function send(path, options) {
 
 export const getSummary = () => send("/api/summary");
 export const getDevices = () => send("/api/devices");
-export const getAlerts = () => send("/api/alerts");
+export const getAlerts = (limit = 50, device) => {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (device) q.set("device", device);
+  return send(`/api/alerts?${q}`);
+};
 export const getLatency = (name, hours = 6) =>
   send(`/api/devices/${encodeURIComponent(name)}/latency?hours=${hours}`);
 

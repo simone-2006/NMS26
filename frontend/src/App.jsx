@@ -12,7 +12,7 @@ import {
 } from "chart.js";
 import "chartjs-adapter-date-fns";
 import { addDevice, deleteDevices, getAlerts, getDevices, getLatency, getLatencyRange, getSummary, updateDevice } from "./api.js";
-import { MoreVertical, Network, Pen, Plus, Trash, X, Expand, Calendar } from "lucide-react";
+import { MoreVertical, Network, Pen, Plus, Trash, X, Expand, Calendar, Loader2 } from "lucide-react";
 import Input from "./components/ui/Input.jsx";
 import { IPInput } from "./components/ui/Input.jsx";
 
@@ -210,6 +210,69 @@ function historyPhrase(state) {
   return "Became unknown";
 }
 
+function StatusBadge({ status }) {
+  if (status === "LOADING") {
+    return (
+      <span className="inline-flex items-center gap-2 font-medium text-text-secondary">
+        <Loader2 size={12} className="animate-spin" />
+        Loading
+      </span>
+    );
+  }
+
+  const up = status === "UP";
+  const down = status === "DOWN";
+  return (
+    <span className="inline-flex items-center font-medium">
+      <span className={`mr-2 inline-block h-2 w-2 rounded-full ${up ? "bg-text-success" : down ? "bg-text-error" : "bg-text-secondary"}`} />
+      <span className={up ? "text-text-success" : down ? "text-text-error" : "text-text-secondary"}>{status ?? "Unknown"}</span>
+    </span>
+  );
+}
+
+function AlertTimeline({ alerts, showDevice = true }) {
+  if (alerts.length === 0) {
+    return <p className="text-sm text-text-secondary">No status changes yet</p>;
+  }
+
+  const groups = alerts.reduce((acc, a) => {
+    const when = new Date(a.t);
+    const label = dayLabel(when);
+    const last = acc[acc.length - 1];
+    if (!last || last.label !== label) acc.push({ label, items: [{ ...a, when }] });
+    else last.items.push({ ...a, when });
+    return acc;
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-4">
+      {groups.map((group) => (
+        <section key={group.label}>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">{group.label}</p>
+          <ol className="ml-1 border-l border-border">
+            {group.items.map((a, i) => (
+              <li key={`${a.t}-${a.device}-${i}`} className="relative pb-3 pl-4 last:pb-0">
+                <span className={`absolute left-0 top-1.5 h-2 w-2 -translate-x-1/2 rounded-full ${a.state === "UP" ? "bg-text-success" : a.state === "DOWN" ? "bg-text-error" : "bg-text-secondary"}`} />
+                <div className="flex items-baseline gap-3">
+                  <time className="w-16 shrink-0 text-xs text-text-secondary">
+                    {a.when.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                  </time>
+                  <p className="text-sm">
+                    {showDevice && <span className="font-medium text-text">{a.device} </span>}
+                    <span className={a.state === "UP" ? "text-text-success" : a.state === "DOWN" ? "text-text-error" : "text-text-secondary"}>
+                      {historyPhrase(a.state)}
+                    </span>
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function LatencySpark({ points, status }) {
   const samples = (points ?? [])
     .filter((p) => p.ms != null && p.t)
@@ -261,6 +324,7 @@ export default function App() {
   const [detailRange, setDetailRange] = useState("1h");
   const [detailPoints, setDetailPoints] = useState([]);
   const [detailError, setDetailError] = useState("");
+  const [detailAlerts, setDetailAlerts] = useState([]);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [actionError, setActionError] = useState("");
@@ -332,7 +396,36 @@ export default function App() {
     return () => {
       stop = true;
     };
-  }, [panel, detailDevice, detailRange]);
+  }, [panel, detailDevice?.id, detailRange]);
+
+  useEffect(() => {
+    if (!detailDevice) return;
+    const fresh = devices.find((d) => d.id === detailDevice.id);
+    if (!fresh) return;
+    if (fresh.status === detailDevice.status && fresh.name === detailDevice.name && fresh.host === detailDevice.host) return;
+    setDetailDevice(fresh);
+  }, [devices, detailDevice]);
+
+  useEffect(() => {
+    if (panel !== "details" || !detailDevice) return;
+    let stop = false;
+    const load = () => {
+      getAlerts(20, detailDevice.id)
+        .then((rows) => {
+          if (!stop) setDetailAlerts(rows);
+        })
+        .catch(() => {
+          if (!stop) setDetailAlerts([]);
+        });
+    };
+    setDetailAlerts([]);
+    load();
+    const id = setInterval(load, 15000);
+    return () => {
+      stop = true;
+      clearInterval(id);
+    };
+  }, [panel, detailDevice?.id]);
 
   function toggleSelected(deviceName) {
     setSelected((prev) => {
@@ -555,23 +648,7 @@ export default function App() {
                     <td className="py-2 px-4">{d.name}</td>
                     <td className="py-2 px-4">{d.host}</td>
                     <td className="py-2 px-4">
-                      <span className={`inline-block w-2 h-2 rounded-full mr-2 
-                      ${d.status === "UP"
-                          ? "bg-text-success"
-                          : d.status === "DOWN"
-                            ? "bg-text-error"
-                            : "bg-text-secondary"
-                        } 
-                    `}></span>
-                      <span className={
-                        d.status === "UP"
-                          ? "text-text-success font-medium"
-                          : d.status === "DOWN"
-                            ? "text-text-error font-medium"
-                            : "text-text-secondary font-medium"
-                      }>
-                        {d.status ?? "Unknown"}
-                      </span>
+                      <StatusBadge status={d.status} />
                     </td>
                     <td className="py-2 px-4">{d.latency_ms ?? "–"}</td>
                     <td className="py-2 px-4">{d.loss_pct + "%" ?? "–"}</td>
@@ -614,45 +691,7 @@ export default function App() {
             <div className="text-lg font-bold text-text">History</div>
             <p className="text-sm text-text-secondary">Status changes, newest first</p>
           </div>
-          {alerts.length === 0 ? (
-            <p className="text-sm text-text-secondary">No status changes yet</p>
-          ) : (
-            <div className="flex flex-col gap-4">
-              {alerts.reduce((groups, a) => {
-                const when = new Date(a.t);
-                const label = dayLabel(when);
-                const last = groups[groups.length - 1];
-                if (!last || last.label !== label) groups.push({ label, items: [{ ...a, when }] });
-                else last.items.push({ ...a, when });
-                return groups;
-              }, []).map((group) => (
-                <section key={group.label}>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">{group.label}</p>
-                  <ol className="ml-1 border-l border-border">
-                    {group.items.map((a, i) => (
-                      <li key={`${a.t}-${a.device}-${i}`} className="relative pb-3 pl-4 last:pb-0">
-                        <span className={`absolute left-0 top-1.5 h-2 w-2 -translate-x-1/2 rounded-full ${a.state === "UP" ? "bg-text-success" : a.state === "DOWN" ? "bg-text-error" : "bg-text-secondary"
-                          }`} />
-                        <div className="flex items-baseline gap-3">
-                          <time className="w-16 shrink-0 text-xs text-text-secondary">
-                            {a.when.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                          </time>
-                          <p className="text-sm">
-                            <span className="font-medium text-text">{a.device}</span>{" "}
-                            <span className={
-                              a.state === "UP" ? "text-text-success" : a.state === "DOWN" ? "text-text-error" : "text-text-secondary"
-                            }>
-                              {historyPhrase(a.state)}
-                            </span>
-                          </p>
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
-                </section>
-              ))}
-            </div>
-          )}
+          <AlertTimeline alerts={alerts} />
         </div>
       </div>
 
@@ -703,6 +742,9 @@ export default function App() {
                 <div>
                   <h2 className="text-lg font-bold text-text">{detailDevice.name}</h2>
                   <p className="text-sm text-text-secondary">{detailDevice.host}</p>
+                  <div className="mt-1">
+                    <StatusBadge status={detailDevice.status} />
+                  </div>
                 </div>
                 <button type="button" onClick={() => setPanel(null)} aria-label="Chiudi" className="cursor-pointer text-text-secondary">
                   <X size={16} />
@@ -735,6 +777,12 @@ export default function App() {
               ) : (
                 <LatencyChart points={detailPoints} rangeId={detailRange} />
               )}
+
+              <div className="mt-6">
+                <div className="text-sm font-bold text-text">Alerts</div>
+                <p className="mb-3 text-xs text-text-secondary">Latest status changes</p>
+                <AlertTimeline alerts={detailAlerts} showDevice={false} />
+              </div>
             </>
           )}
         </div>
