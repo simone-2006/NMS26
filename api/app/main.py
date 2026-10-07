@@ -1,19 +1,41 @@
 import os
+import re
+from contextlib import asynccontextmanager
+
 import yaml
 from fastapi import FastAPI, HTTPException
 from influxdb_client import InfluxDBClient
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Mini NMS API")
 
-client = InfluxDBClient(
-    url=os.getenv("INFLUX_URL", "http://influxdb:8086"),
-    token=os.environ["INFLUX_TOKEN"],
-    org=os.environ["INFLUX_ORG"],
-)
-BUCKET = os.environ["INFLUX_BUCKET"]
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable: {name}. "
+            f"Set it in the environment or .env before starting the API."
+        )
+    return value
+
+
+INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086")
+INFLUX_TOKEN = _require_env("INFLUX_TOKEN")
+INFLUX_ORG = _require_env("INFLUX_ORG")
+BUCKET = _require_env("INFLUX_BUCKET")
 DEVICES_PATH = "/config/devices.yml"
 ALLOWED_CHECKS = {"ping", "snmp"}
+DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    client.close()
+
+
+app = FastAPI(title="Mini NMS API", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -21,8 +43,12 @@ def health():
     return {"status": "ok"}
 
 
-def _rows(flux):
-    return [r for t in client.query_api().query(flux) for r in t.records]
+def _rows(flux, params=None):
+    return [
+        r
+        for t in client.query_api().query(flux, params=params or {})
+        for r in t.records
+    ]
 
 
 def _read_config():
@@ -60,12 +86,12 @@ def _devices_state():
               |> group(columns: ["device"]) |> last()''')
     }
 
-    # ultima latenza/loss negli ultimi 5 minuti
+    # ultima latenza/loss negli ultimi 5 minuti (per device e per field)
     ping = {}
     for r in _rows(f'''
         from(bucket: "{BUCKET}") |> range(start: -5m)
           |> filter(fn: (r) => r._measurement == "ping" and (r._field == "rtt_avg" or r._field == "loss"))
-          |> last()'''):
+          |> group(columns: ["device", "_field"]) |> last()'''):
         ping.setdefault(r["device"], {})[r.get_field()] = r.get_value()
 
     return [
@@ -90,7 +116,7 @@ def add_device(body: DeviceIn):
     name, host = body.name.strip(), body.host.strip()
     if not name or not host:
         raise HTTPException(400, "nome e host obbligatori")
-    if not all(c.isalnum() or c in "-_." for c in name):
+    if not DEVICE_NAME_RE.fullmatch(name):
         raise HTTPException(400, "nome non valido")
     checks = body.checks or ["ping"]
     if not set(checks) <= ALLOWED_CHECKS:
@@ -138,14 +164,16 @@ def alerts(limit: int = 50):
 
 @app.get("/devices/{name}/latency")
 def latency(name: str, hours: int = 24):
-    safe = "".join(c for c in name if c.isalnum() or c in "-_.")
+    if not DEVICE_NAME_RE.fullmatch(name):
+        raise HTTPException(400, "nome non valido")
+    hours = max(1, min(int(hours), 168))
     q = f'''
     from(bucket: "{BUCKET}")
-      |> range(start: -{int(hours)}h)
-      |> filter(fn: (r) => r._measurement == "ping" and r.device == "{safe}" and r._field == "rtt_avg")
+      |> range(start: -{hours}h)
+      |> filter(fn: (r) => r._measurement == "ping" and r.device == params.device and r._field == "rtt_avg")
       |> aggregateWindow(every: 5m, fn: mean, createEmpty: false)
     '''
-    tables = client.query_api().query(q)
+    tables = client.query_api().query(q, params={"device": name})
     return [{"t": r.get_time().isoformat(), "ms": r.get_value()} for t in tables for r in t.records]
 
 # TODO: /logs

@@ -1,10 +1,21 @@
 import os
 import yaml
 
+
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable: {name}. "
+            f"Set it in the environment or .env before starting the collector."
+        )
+    return value
+
+
 INFLUX_URL = os.getenv("INFLUX_URL", "http://influxdb:8086")
-INFLUX_TOKEN = os.environ["INFLUX_TOKEN"]
-INFLUX_ORG = os.environ["INFLUX_ORG"]
-INFLUX_BUCKET = os.environ["INFLUX_BUCKET"]
+INFLUX_TOKEN = _require_env("INFLUX_TOKEN")
+INFLUX_ORG = _require_env("INFLUX_ORG")
+INFLUX_BUCKET = _require_env("INFLUX_BUCKET")
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
