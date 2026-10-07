@@ -20,7 +20,7 @@ devices:
   host: 192.168.11.91
   checks:
   - ping
-- name: ewq
-  host: 192.168.11.10
+- name: DNS-GOOGLE
+  host: 1.1.1.1
   checks:
   - ping

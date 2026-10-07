@@ -74,6 +74,10 @@ class DeviceIn(BaseModel):
     checks: list[str] = ["ping"]
 
 
+class DeviceDelete(BaseModel):
+    names: list[str] = Field(min_length=1)
+
+
 def _devices_state():
     cfg = _read_config()["devices"]
 
@@ -92,7 +96,10 @@ def _devices_state():
         from(bucket: "{BUCKET}") |> range(start: -5m)
           |> filter(fn: (r) => r._measurement == "ping" and (r._field == "rtt_avg" or r._field == "loss"))
           |> group(columns: ["device", "_field"]) |> last()'''):
-        ping.setdefault(r["device"], {})[r.get_field()] = r.get_value()
+        slot = ping.setdefault(r["device"], {})
+        slot[r.get_field()] = r.get_value()
+        if r.get_field() == "rtt_avg":
+            slot["time"] = r.get_time().isoformat()
 
     return [
         {
@@ -101,6 +108,7 @@ def _devices_state():
             "status": status.get(d["name"], "UNKNOWN"),
             "latency_ms": ping.get(d["name"], {}).get("rtt_avg"),
             "loss_pct": ping.get(d["name"], {}).get("loss"),
+            "last_ping": ping.get(d["name"], {}).get("time"),
         }
         for d in cfg
     ]
@@ -137,6 +145,26 @@ def add_device(body: DeviceIn):
     }
 
 
+@app.delete("/devices")
+def delete_devices(body: DeviceDelete):
+    names = []
+    for raw in body.names:
+        name = raw.strip()
+        if not DEVICE_NAME_RE.fullmatch(name):
+            raise HTTPException(400, "nome non valido")
+        names.append(name)
+
+    data = _read_config()
+    drop = set(names)
+    kept = [d for d in data["devices"] if d.get("name") not in drop]
+    removed = len(data["devices"]) - len(kept)
+    if removed == 0:
+        raise HTTPException(404, "nessun device trovato")
+    data["devices"] = kept
+    _write_config(data)
+    return {"removed": removed}
+
+
 @app.get("/summary")
 def summary():
     devs = _devices_state()
@@ -170,10 +198,10 @@ def latency(name: str, hours: int = 24):
     q = f'''
     from(bucket: "{BUCKET}")
       |> range(start: -{hours}h)
-      |> filter(fn: (r) => r._measurement == "ping" and r.device == params.device and r._field == "rtt_avg")
+      |> filter(fn: (r) => r._measurement == "ping" and r.device == "{name}" and r._field == "rtt_avg")
       |> aggregateWindow(every: 5m, fn: mean, createEmpty: false)
     '''
-    tables = client.query_api().query(q, params={"device": name})
+    tables = client.query_api().query(q)
     return [{"t": r.get_time().isoformat(), "ms": r.get_value()} for t in tables for r in t.records]
 
 # TODO: /logs
