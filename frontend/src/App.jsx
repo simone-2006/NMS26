@@ -11,7 +11,10 @@ import {
   Tooltip,
 } from "chart.js";
 import "chartjs-adapter-date-fns";
-import { addDevice, checkDevices, deleteDevices, getAlerts, getDevices, getLatency, getLatencyRange, getNeighbors, getSummary, updateDevice } from "./api.js";
+import { addDevice, checkDevices, deleteDevices, getAlerts, getDevices, getLatency, getLatencyRange, getNeighbors, getRadar, getSummary, getTraffic, getUptime, updateDevice } from "./api.js";
+import Radar from "./components/Radar.jsx";
+import TrafficChart from "./components/TrafficChart.jsx";
+import UptimeStrip from "./components/UptimeStrip.jsx";
 import { MoreVertical, Network, Pen, Plus, Trash, X, Expand, Calendar, Loader2, Search, Check, RefreshCw } from "lucide-react";
 import Input from "./components/ui/Input.jsx";
 
@@ -25,6 +28,16 @@ const DETAIL_RANGES = [
   { id: "year", label: "Last year" },
   { id: "all", label: "All" },
 ];
+
+function slugName(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+}
 
 function macKey(value) {
   const hex = String(value || "").toLowerCase().replace(/[^0-9a-f]/g, "");
@@ -41,7 +54,7 @@ function compareIp(a, b) {
   return 0;
 }
 
-function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId }) {
+function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId, onRefresh, refreshing }) {
   const [open, setOpen] = useState(false);
   const inputRef = useRef(null);
   const q = query.trim();
@@ -75,14 +88,26 @@ function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId })
             Search the ARP table. A result fills the MAC field only.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          aria-label="Hide MAC lookup"
-          className="cursor-pointer text-text-secondary"
-        >
-          <X size={14} />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            aria-label="Refresh ARP table"
+            className="flex cursor-pointer items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[11px] font-medium text-text hover:bg-bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="Hide MAC lookup"
+            className="cursor-pointer text-text-secondary"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
       <div className="mt-2 flex items-center gap-2 rounded-lg border border-border bg-bg-secondary px-2">
         <Search size={14} className="shrink-0 text-text-secondary" />
@@ -127,7 +152,8 @@ function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId })
                   className={`flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left ${owner ? "cursor-not-allowed border-transparent bg-bg-secondary opacity-70" : used ? "cursor-pointer border-brand bg-bg-secondary" : "cursor-pointer border-transparent bg-bg-secondary hover:border-border"}`}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate font-mono text-xs text-text">{n.ip}</span>
+                    {n.name && <span className="block truncate text-xs text-text">{n.name}</span>}
+                    <span className={`block truncate font-mono ${n.name ? "text-[11px] text-text-secondary" : "text-xs text-text"}`}>{n.ip}</span>
                     <span className="block truncate font-mono text-[11px] text-text-secondary">{n.mac}</span>
                   </span>
                   {owner ? (
@@ -331,6 +357,36 @@ function historyPhrase(state) {
   return "Became unknown";
 }
 
+function sameMinute(alert, catalog) {
+  const moment = new Date(alert.t).getTime();
+  const names = [];
+  const seen = new Set();
+  for (const other of catalog || []) {
+    if (other.device === alert.device || other.state !== alert.state) continue;
+    if (Math.abs(new Date(other.t).getTime() - moment) > 60_000) continue;
+    if (seen.has(other.device)) continue;
+    seen.add(other.device);
+    names.push(other.device);
+  }
+  return names;
+}
+
+function correlationPhrase(alert, names) {
+  if (!names.length) return "";
+  const list = names.slice(0, 4).join(", ");
+  if (alert.state === "DOWN") return `In the same minute, ${list} also went down.`;
+  if (alert.state === "UP") return `In the same minute, ${list} also came up.`;
+  if (alert.state === "UNRESOLVED") return `In the same minute, ${list} also lost their address.`;
+  return "";
+}
+
+function downTogether(device, alerts) {
+  if (!device) return "";
+  const latest = (alerts || []).find((alert) => alert.device === device.name && alert.state === "DOWN");
+  if (!latest) return "";
+  return correlationPhrase(latest, sameMinute(latest, alerts));
+}
+
 function StatusBadge({ status }) {
   if (status === "LOADING") {
     return (
@@ -346,13 +402,13 @@ function StatusBadge({ status }) {
   const label = status === "UNRESOLVED" ? "Unresolved" : (status ?? "Unknown");
   return (
     <span className="inline-flex items-center font-medium">
-      <span className={`mr-2 inline-block h-2 w-2 rounded-full ${up ? "bg-text-success" : down ? "bg-text-error" : "bg-text-secondary"}`} />
+      <span className={`mr-2 inline-block h-2 w-2 rounded-full ${up ? "bg-text-success" : down ? "bg-text-error" : "bg-bg-tertiary"}`} />
       <span className={up ? "text-text-success" : down ? "text-text-error" : "text-text-secondary"}>{label}</span>
     </span>
   );
 }
 
-function AlertTimeline({ alerts, showDevice = true }) {
+function AlertTimeline({ alerts, showDevice = true, catalog }) {
   if (alerts.length === 0) {
     return <p className="text-sm text-text-secondary">No status changes yet</p>;
   }
@@ -366,28 +422,34 @@ function AlertTimeline({ alerts, showDevice = true }) {
     return acc;
   }, []);
 
+  const source = catalog || alerts;
+
   return (
     <div className="flex flex-col gap-4">
       {groups.map((group) => (
         <section key={group.label}>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">{group.label}</p>
           <ol className="ml-1 border-l border-border">
-            {group.items.map((a, i) => (
-              <li key={`${a.t}-${a.device}-${i}`} className="relative pb-3 pl-4 last:pb-0">
-                <span className={`absolute left-0 top-1.5 h-2 w-2 -translate-x-1/2 rounded-full ${a.state === "UP" ? "bg-text-success" : a.state === "DOWN" ? "bg-text-error" : "bg-text-secondary"}`} />
-                <div className="flex items-baseline gap-3">
-                  <time className="w-16 shrink-0 text-xs text-text-secondary">
-                    {a.when.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                  </time>
-                  <p className="text-sm">
-                    {showDevice && <span className="font-medium text-text">{a.device} </span>}
-                    <span className={a.state === "UP" ? "text-text-success" : a.state === "DOWN" ? "text-text-error" : "text-text-secondary"}>
-                      {historyPhrase(a.state)}
-                    </span>
-                  </p>
-                </div>
-              </li>
-            ))}
+            {group.items.map((a, i) => {
+              const together = correlationPhrase(a, sameMinute(a, source));
+              return (
+                <li key={`${a.t}-${a.device}-${i}`} className="relative pb-3 pl-4 last:pb-0">
+                  <span className={`absolute left-0 top-1.5 h-2 w-2 -translate-x-1/2 rounded-full ${a.state === "UP" ? "bg-text-success" : a.state === "DOWN" ? "bg-text-error" : "bg-bg-tertiary"}`} />
+                  <div className="flex items-baseline gap-3">
+                    <time className="w-16 shrink-0 text-xs text-text-secondary">
+                      {a.when.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                    </time>
+                    <p className="text-sm">
+                      {showDevice && <span className="font-medium text-text">{a.device} </span>}
+                      <span className={a.state === "UP" ? "text-text-success" : a.state === "DOWN" ? "text-text-error" : "text-text-secondary"}>
+                        {historyPhrase(a.state)}
+                      </span>
+                    </p>
+                  </div>
+                  {together && <p className="mt-0.5 pl-[4.75rem] text-xs text-text-secondary">{together}</p>}
+                </li>
+              );
+            })}
           </ol>
         </section>
       ))}
@@ -442,7 +504,10 @@ export default function App() {
   const [host, setHost] = useState("");
   const [mac, setMac] = useState("");
   const [neighbors, setNeighbors] = useState([]);
+  const [neighborsTick, setNeighborsTick] = useState(0);
+  const [neighborsLoading, setNeighborsLoading] = useState(false);
   const [lookupIp, setLookupIp] = useState("");
+  const [nameHint, setNameHint] = useState("");
   const [saving, setSaving] = useState(false);
   const [panel, setPanel] = useState(null);
   const [detailDevice, setDetailDevice] = useState(null);
@@ -455,12 +520,19 @@ export default function App() {
   const [actionError, setActionError] = useState("");
   const [checking, setChecking] = useState(false);
   const [dataTick, setDataTick] = useState(0);
+  const [snmpOn, setSnmpOn] = useState(false);
+  const [uptime, setUptime] = useState(null);
+  const [radar, setRadar] = useState({ seen: 0, unknown: [] });
+  const [trafficPoints, setTrafficPoints] = useState([]);
+  const [trafficError, setTrafficError] = useState("");
 
   const refresh = useCallback(async () => {
-    const [nextSummary, nextDevices, nextAlerts] = await Promise.all([
+    const [nextSummary, nextDevices, nextAlerts, nextUptime, nextRadar] = await Promise.all([
       getSummary(),
       getDevices(),
       getAlerts(),
+      getUptime(24).catch(() => null),
+      getRadar().catch(() => null),
     ]);
     const series = await Promise.all(
       nextDevices.map(async (d) => {
@@ -476,6 +548,8 @@ export default function App() {
     setSummary(nextSummary);
     setDevices(nextDevices);
     setAlerts(nextAlerts);
+    if (nextUptime) setUptime(nextUptime);
+    if (nextRadar) setRadar(nextRadar);
     setHistory(Object.fromEntries(series));
     setSelected((prev) => new Set([...prev].filter((n) => alive.has(n))));
   }, []);
@@ -498,17 +572,21 @@ export default function App() {
   useEffect(() => {
     if (panel !== "add" && panel !== "edit") return;
     let stop = false;
+    setNeighborsLoading(true);
     getNeighbors()
       .then((rows) => {
         if (!stop) setNeighbors(Array.isArray(rows) ? rows : []);
       })
       .catch(() => {
         if (!stop) setNeighbors([]);
+      })
+      .finally(() => {
+        if (!stop) setNeighborsLoading(false);
       });
     return () => {
       stop = true;
     };
-  }, [panel]);
+  }, [panel, neighborsTick]);
 
   useEffect(() => {
     if (!panel) return;
@@ -534,6 +612,24 @@ export default function App() {
       })
       .catch((err) => {
         if (!stop) setDetailError(String(err));
+      });
+    return () => {
+      stop = true;
+    };
+  }, [panel, detailDevice?.id, detailRange, dataTick]);
+
+  useEffect(() => {
+    if (panel !== "details" || !detailDevice) return;
+    let stop = false;
+    const { start, every } = detailQuery(detailRange);
+    setTrafficPoints([]);
+    setTrafficError("");
+    getTraffic(detailDevice.id, start, every)
+      .then((points) => {
+        if (!stop) setTrafficPoints(Array.isArray(points) ? points : []);
+      })
+      .catch((err) => {
+        if (!stop) setTrafficError(String(err));
       });
     return () => {
       stop = true;
@@ -591,7 +687,23 @@ export default function App() {
     setHost("");
     setMac("");
     setLookupIp("");
+    setNameHint("");
+    setSnmpOn(false);
     setPanel("add");
+  }
+
+  function openDiscovered(neighbor) {
+    const octet = String(neighbor.ip || "").split(".").pop() || "host";
+    const fromNetwork = slugName(neighbor.name);
+    const base = fromNetwork || `lan-${octet}`;
+    const taken = devices.some((device) => device.name === base);
+    const suffix = String(neighbor.mac || "").replace(/[^0-9a-f]/gi, "").slice(-2);
+    openAdd();
+    setName(taken && suffix ? `${base}-${suffix}` : base);
+    setNameHint(neighbor.name || "");
+    setMac(neighbor.mac || "");
+    setHost("");
+    setSnmpOn(false);
   }
 
   function openDetails(device) {
@@ -608,6 +720,8 @@ export default function App() {
     setHost(device.host || "");
     setMac(device.mac || "");
     setLookupIp("");
+    setNameHint("");
+    setSnmpOn((device.checks || []).includes("snmp"));
     setPanel("edit");
   }
 
@@ -625,7 +739,7 @@ export default function App() {
         setActionError(`MAC già usato da ${taken.name}`);
         return;
       }
-      await addDevice({ name: name.trim(), host: host.trim(), mac: mac.trim(), checks: ["ping"] });
+      await addDevice({ name: name.trim(), host: host.trim(), mac: mac.trim(), checks: snmpOn ? ["ping", "snmp"] : ["ping"] });
       setName("");
       setHost("");
       setMac("");
@@ -652,7 +766,7 @@ export default function App() {
         setActionError(`MAC già usato da ${taken.name}`);
         return;
       }
-      await updateDevice(editing, { name: name.trim(), host: host.trim(), mac: mac.trim() });
+      await updateDevice(editing, { name: name.trim(), host: host.trim(), mac: mac.trim(), checks: snmpOn ? ["ping", "snmp"] : ["ping"] });
       setName("");
       setHost("");
       setMac("");
@@ -721,6 +835,13 @@ export default function App() {
     }
   }
 
+  const uptimeById = Object.fromEntries((uptime?.devices || []).map((row) => [row.id, row]));
+  const uptimeValues = (uptime?.devices || []).map((row) => row.uptime_pct).filter((value) => typeof value === "number");
+  const avgUptime = uptimeValues.length
+    ? Math.round((uptimeValues.reduce((sum, value) => sum + value, 0) / uptimeValues.length) * 10) / 10
+    : null;
+  const togetherNow = downTogether(detailDevice, alerts);
+
   return (
     <div className="flex h-screen bg-bg">
       <div className="min-w-0 flex-1 p-4 overflow-auto">
@@ -756,7 +877,7 @@ export default function App() {
 
         <div className="mt-4 bg-bg-secondary rounded-lg p-4 flex flex-col gap-4">
           <div className="text-lg font-bold text-text mb-2">Summary</div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
             <div className="flex flex-col items-center">
               <span className="text-text text-sm">Total</span>
               <span className="text-2xl font-bold text-text">{summary?.total ?? "–"}</span>
@@ -773,6 +894,10 @@ export default function App() {
               <span className="text-text text-sm">Unknown</span>
               <span className="text-2xl font-bold text-text">{summary?.unknown ?? "–"}</span>
             </div>
+            <div className="flex flex-col items-center">
+              <span className="text-text text-sm">Uptime 24h</span>
+              <span className="text-2xl font-bold text-text">{avgUptime == null ? "–" : `${avgUptime}%`}</span>
+            </div>
           </div>
 
           <div className="mt-2 flex items-center justify-center text-text text-sm">
@@ -780,6 +905,14 @@ export default function App() {
             <span className="font-bold">{summary?.avg_latency_ms ?? "–"} ms</span>
           </div>
         </div>
+
+        <Radar
+          devices={devices}
+          unknown={radar.unknown}
+          seen={radar.seen}
+          onOpen={openDetails}
+          onAdd={openDiscovered}
+        />
 
         {/* Devices */}
         <div className="mt-6 bg-bg-secondary rounded-lg p-4">
@@ -821,12 +954,14 @@ export default function App() {
                 <tr className="border-b border-bg">
                   <th className="py-2 px-4 font-semibold text-text-secondary"></th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Name</th>
+                  <th className="py-2 px-4 font-semibold text-text-secondary">Network</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Host</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">MAC</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Current IP</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Status</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Latency (ms)</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Loss</th>
+                  <th className="py-2 px-4 font-semibold text-text-secondary">24h</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Last 6h</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Last ping</th>
                   <th className="py-2 px-4 font-semibold text-text-secondary">Actions</th>
@@ -843,45 +978,53 @@ export default function App() {
                       aria-current={openInSidebar ? "true" : undefined}
                       className={`border-b last:border-b-0 border-bg transition-colors ${openInSidebar ? "bg-brand/10" : ""}`}
                     >
-                    <td className="py-2 px-4">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(d.id)}
-                        onChange={() => toggleSelected(d.id)}
-                        aria-label={`Seleziona ${d.name}`}
-                      />
-                    </td>
-                    <td className="py-2 px-4">{d.name}</td>
-                    <td className="py-2 px-4">{d.host || "–"}</td>
-                    <td className="py-2 px-4">{d.mac || "–"}</td>
-                    <td className="py-2 px-4">{d.current_ip || "–"}</td>
-                    <td className="py-2 px-4">
-                      <StatusBadge status={d.status} />
-                    </td>
-                    <td className="py-2 px-4">{d.latency_ms ?? "–"}</td>
-                    <td className="py-2 px-4">{d.loss_pct == null ? "–" : `${d.loss_pct}%`}</td>
-                    <td className="py-2 px-4">
-                      <LatencySpark points={history[d.id]} status={d.status} />
-                    </td>
-                    <td className="py-2 px-4">
-                      {d.last_ping ? (() => {
-                        const dateObj = new Date(d.last_ping);
-                        const now = new Date();
-                        const isToday =
-                          dateObj.getFullYear() === now.getFullYear() &&
-                          dateObj.getMonth() === now.getMonth() &&
-                          dateObj.getDate() === now.getDate();
+                      <td className="py-2 px-4">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(d.id)}
+                          onChange={() => toggleSelected(d.id)}
+                          aria-label={`Seleziona ${d.name}`}
+                        />
+                      </td>
+                      <td className="py-2 px-4">{d.name}</td>
+                      <td className="py-2 px-4">{d.network_name || "–"}</td>
+                      <td className="py-2 px-4">{d.host || "–"}</td>
+                      <td className="py-2 px-4">{d.mac || "–"}</td>
+                      <td className="py-2 px-4">{d.current_ip || "–"}</td>
+                      <td className="py-2 px-4">
+                        <StatusBadge status={d.status} />
+                      </td>
+                      <td className="py-2 px-4">{d.latency_ms ?? "–"}</td>
+                      <td className="py-2 px-4">{d.loss_pct == null ? "–" : `${d.loss_pct}%`}</td>
+                      <td className="py-2 px-4">
+                        <UptimeStrip
+                          segments={uptimeById[d.id]?.segments}
+                          pct={uptimeById[d.id]?.uptime_pct}
+                          hours={uptime?.hours || 24}
+                        />
+                      </td>
+                      <td className="py-2 px-4">
+                        <LatencySpark points={history[d.id]} status={d.status} />
+                      </td>
+                      <td className="py-2 px-4">
+                        {d.last_ping ? (() => {
+                          const dateObj = new Date(d.last_ping);
+                          const now = new Date();
+                          const isToday =
+                            dateObj.getFullYear() === now.getFullYear() &&
+                            dateObj.getMonth() === now.getMonth() &&
+                            dateObj.getDate() === now.getDate();
 
-                        return isToday
-                          ? dateObj.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                          : dateObj.toLocaleString("it-IT");
-                      })() : "–"}
-                    </td>
-                    <td className="py-2 px-4">
-                      <RowMenu device={d} onEdit={openEdit} onDelete={onDeleteOne} onExpand={openDetails} />
-                    </td>
+                          return isToday
+                            ? dateObj.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                            : dateObj.toLocaleString("it-IT");
+                        })() : "–"}
+                      </td>
+                      <td className="py-2 px-4">
+                        <RowMenu device={d} onEdit={openEdit} onDelete={onDeleteOne} onExpand={openDetails} />
+                      </td>
 
-                  </tr>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -925,6 +1068,9 @@ export default function App() {
                     required
                   >
                   </Input>
+                  {nameHint && (
+                    <span className="text-xs text-text-secondary">Network name: {nameHint}. The field above is the name saved in the table.</span>
+                  )}
                 </label>
                 <label className="flex flex-col gap-1 text-sm text-text">
                   Host
@@ -950,7 +1096,23 @@ export default function App() {
                   onUse={setMac}
                   devices={devices}
                   exceptId={editing}
+                  onRefresh={() => setNeighborsTick((n) => n + 1)}
+                  refreshing={neighborsLoading}
                 />
+                <label className="flex items-start gap-2 text-sm text-text">
+                  <input
+                    type="checkbox"
+                    checked={snmpOn}
+                    onChange={(e) => setSnmpOn(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Collect bandwidth (SNMP)
+                    <span className="mt-0.5 block text-xs text-text-secondary">
+                      Reads interface counters. The device must answer SNMP; the community is SNMP_COMMUNITY.
+                    </span>
+                  </span>
+                </label>
                 <p className="text-xs text-text-secondary">
                   A DHCP reservation on the router keeps the address stable. A hostname works when the router updates DNS. If the address changes, leave Host empty and set the MAC: each check pings only the current lease, never an old IP.
                 </p>
@@ -1009,10 +1171,31 @@ export default function App() {
                 <LatencyChart points={detailPoints} rangeId={detailRange} />
               )}
 
+              <div className="mt-6">
+                {(detailDevice.checks || []).includes("snmp") ? (
+                  trafficError ? (
+                    <p className="text-xs text-text-error">{trafficError}</p>
+                  ) : (
+                    <TrafficChart points={trafficPoints} range={detailQuery(detailRange)} />
+                  )
+                ) : (
+                  <div>
+                    <p className="text-sm font-bold text-text">Bandwidth</p>
+                    <p className="mt-1 text-sm text-text-secondary">
+                      SNMP is off for this device. Turn it on in Edit to collect interface traffic.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {detailDevice.status === "DOWN" && togetherNow && (
+                <p className="mt-4 text-sm text-text">{togetherNow}</p>
+              )}
+
               <div className="mt-6 overflow-auto">
                 <div className="text-sm font-bold text-text">Alerts</div>
                 <p className="mb-3 text-xs text-text-secondary">Latest status changes</p>
-                <AlertTimeline alerts={detailAlerts} showDevice={false} />
+                <AlertTimeline alerts={detailAlerts} showDevice={false} catalog={alerts} />
               </div>
             </>
           )}

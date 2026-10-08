@@ -26,6 +26,7 @@ INTERVAL = int(os.getenv("CHECK_INTERVAL", 30))
 PING_COUNT = int(os.getenv("PING_COUNT", 5))
 DOWN_AFTER = int(os.getenv("DOWN_AFTER_FAILS", 3))
 UP_AFTER = int(os.getenv("UP_AFTER_OKS", 2))
+SNMP_COMMUNITY = os.getenv("SNMP_COMMUNITY", "public")
 
 
 def load_devices(path="/config/devices.yml"):

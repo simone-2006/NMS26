@@ -12,7 +12,7 @@ export default defineConfig({
       interval: 300,
     },
     hmr: {
-      clientPort: 5173,
+      clientPort: Number(process.env.HMR_CLIENT_PORT || 26173),
     },
     proxy: {
       "/api": {

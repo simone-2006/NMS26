@@ -2,9 +2,10 @@
 
 @theme {
     --color-brand: #0084FF;
-    --color-brand-secondary: #fff4e0;
+    --color-brand-secondary: #268BFF;
     --color-bg: #F3F3F3;
     --color-bg-secondary: #FFFFFF ;
+    --color-bg-tertiary: #D1D1D1 ;
     --color-text: #181818;
     --color-text-secondary: #4B4B4B;
     --color-border: #D3D3D3;

@@ -6,3 +6,4 @@ dist/
 utile
 config/devices.yml
 config/arp-cache.txt
+config/lan-names.txt

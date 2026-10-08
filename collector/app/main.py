@@ -6,7 +6,8 @@ from . import config
 from .ping import ping_host
 from .resolve import confirmed_ips, is_ipv4, normalize_mac
 from .state import DeviceState
-from .storage import write_current_ip, write_ping, write_status
+from .snmp import poll_interfaces
+from .storage import write_current_ip, write_ping, write_status, write_traffic
 from .notifier import notify
 
 states: dict[str, DeviceState] = {}
@@ -51,6 +52,7 @@ async def check_device(dev: dict, by_mac: dict[str, str]):
         address = measured.get("address") or ""
         current = address if is_ipv4(address) else (host if is_ipv4(host) else "")
         await _record(device_id, name, current or host, st, measured, current)
+        await _poll_snmp(dev, current)
         return
 
     if not mac:
@@ -73,6 +75,20 @@ async def check_device(dev: dict, by_mac: dict[str, str]):
         await _record(device_id, name, ip, st, None, ip)
         return
     await _record(device_id, name, ip, st, measured, ip)
+    await _poll_snmp(dev, ip)
+
+
+async def _poll_snmp(dev: dict, ip: str):
+    if "snmp" not in dev.get("checks", []) or not ip:
+        return
+    try:
+        samples = await poll_interfaces({**dev, "host": ip})
+    except Exception as exc:
+        print(f"[ERROR] {dev['name']} snmp: {exc!r}")
+        return
+    device_id = dev.get("id") or dev["name"]
+    for sample in samples:
+        await write_traffic(device_id, sample["iface"], sample["in_bps"], sample["out_bps"])
 
 
 async def run_once() -> int:

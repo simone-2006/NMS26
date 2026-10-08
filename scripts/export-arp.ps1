@@ -1,5 +1,7 @@
 # Writes config/arp-cache.txt from the Windows neighbor table so the
 # collector, inside Docker, can map a device MAC to its current IP.
+# Every 45s it also asks the LAN for the names devices announce
+# (mDNS and NetBIOS) and appends them: "mac ip name".
 # If a configured MAC is missing, pings the local /24 once a minute to fill the table.
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +38,36 @@ function Get-LanNeighbors {
     }
 }
 
+$script:LanNames = @{}
+$script:NextNames = [datetime]::MinValue
+
+function Update-LanNames {
+    if ((Get-Date) -lt $script:NextNames) { return }
+    $script:NextNames = (Get-Date).AddSeconds(45)
+    $resolver = Join-Path $PSScriptRoot "lan-names.py"
+    if (-not (Test-Path $resolver)) { return }
+    $python = $null
+    foreach ($cmd in @("python", "py")) {
+        if (Get-Command $cmd -ErrorAction SilentlyContinue) { $python = $cmd; break }
+    }
+    if (-not $python) { return }
+    try {
+        & $python $resolver
+        $path = Join-Path $root "config\lan-names.txt"
+        if (-not (Test-Path $path)) { return }
+        $fresh = @{}
+        foreach ($line in [System.IO.File]::ReadAllLines($path, [System.Text.UTF8Encoding]::new($false))) {
+            $parts = $line.Split("`t", 2)
+            if ($parts.Length -eq 2 -and $parts[0] -and $parts[1].Trim()) {
+                $fresh[$parts[0].Trim()] = $parts[1].Trim()
+            }
+        }
+        if ($fresh.Count -gt 0) { $script:LanNames = $fresh }
+    } catch {
+        Write-Host "[arp] names $($_.Exception.Message)"
+    }
+}
+
 function Export-Cache {
     $rank = @{
         Reachable = 0
@@ -56,10 +88,13 @@ function Export-Cache {
     }
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($mac in $best.Keys) {
-        $lines.Add("$mac $($best[$mac].IP)")
+        $ip = $best[$mac].IP
+        $name = $script:LanNames[$ip]
+        if ($name) { $lines.Add("$mac $ip $name") } else { $lines.Add("$mac $ip") }
     }
     $tmp = "$outPath.tmp"
-    [System.IO.File]::WriteAllText($tmp, (($lines -join "`n") + "`n"))
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($tmp, (($lines -join "`n") + "`n"), $utf8)
     Move-Item -Force $tmp $outPath
     return @($best.Keys)
 }
@@ -89,6 +124,7 @@ function Invoke-Sweep {
 $lastSweep = [datetime]::MinValue
 while ($true) {
     try {
+        Update-LanNames
         $known = Export-Cache
         $missing = @(Get-DeviceMacs | Where-Object { $known -notcontains $_ })
         if ($missing.Count -gt 0 -and ((Get-Date) - $lastSweep).TotalSeconds -gt 60) {

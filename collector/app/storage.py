@@ -23,6 +23,15 @@ async def write_current_ip(device: str, ip: str):
     await asyncio.to_thread(_write.write, config.INFLUX_BUCKET, config.INFLUX_ORG, p)
 
 
+async def write_traffic(device: str, iface: str, in_bps: float, out_bps: float):
+    p = (
+        Point("traffic").tag("device", device).tag("iface", iface)
+        .field("in_bps", float(in_bps))
+        .field("out_bps", float(out_bps))
+    )
+    await asyncio.to_thread(_write.write, config.INFLUX_BUCKET, config.INFLUX_ORG, p)
+
+
 async def write_status(device: str, host: str, state: str):
     p = Point("status").tag("device", device).tag("host", host).field("state", state)
     await asyncio.to_thread(_write.write, config.INFLUX_BUCKET, config.INFLUX_ORG, p)

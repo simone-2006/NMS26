@@ -7,6 +7,8 @@ async function send(path, options) {
 export const getSummary = () => send("/api/summary");
 export const getDevices = () => send("/api/devices");
 export const getNeighbors = () => send("/api/neighbors");
+export const getRadar = () => send("/api/radar");
+export const getUptime = (hours = 24) => send(`/api/uptime?hours=${hours}`);
 export const checkDevices = () => send("/api/check", { method: "POST" });
 export const getAlerts = (limit = 50, device) => {
   const q = new URLSearchParams({ limit: String(limit) });
@@ -19,6 +21,11 @@ export const getLatency = (name, hours = 6) =>
 export const getLatencyRange = (name, start, every) =>
   send(
     `/api/devices/${encodeURIComponent(name)}/latency?start=${encodeURIComponent(start)}&every=${encodeURIComponent(every)}`,
+  );
+
+export const getTraffic = (name, start, every) =>
+  send(
+    `/api/devices/${encodeURIComponent(name)}/traffic?start=${encodeURIComponent(start)}&every=${encodeURIComponent(every)}`,
   );
 
 export const addDevice = (device) =>

@@ -2,7 +2,7 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -98,6 +98,7 @@ class DeviceUpdate(BaseModel):
     name: str = Field(min_length=1)
     host: str = ""
     mac: str = ""
+    checks: list[str] | None = None
 
 
 def _device_id(device: dict) -> str:
@@ -130,6 +131,7 @@ def _neighbors():
     with handle:
         for line in handle:
             mac = ip = ""
+            name_parts = []
             for part in line.split():
                 if not ip and len(part.split(".")) == 4 and all(p.isdigit() and int(p) <= 255 for p in part.split(".")):
                     if part.startswith(("224.", "239.", "255.")):
@@ -140,8 +142,10 @@ def _neighbors():
                     parsed = _mac_or_empty(part)
                     if parsed and parsed not in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") and not parsed.startswith("01:00:5e"):
                         mac = parsed
+                        continue
+                name_parts.append(part)
             if mac and ip:
-                found.append({"mac": mac, "ip": ip})
+                found.append({"mac": mac, "ip": ip, "name": " ".join(name_parts)})
     return found
 
 
@@ -167,6 +171,29 @@ def _assert_mac_free(devices: list, mac: str, except_id: str | None = None) -> N
             continue
         if _mac_or_empty(device.get("mac") or "") == mac:
             raise HTTPException(409, f"MAC già usato da {device.get('name') or _device_id(device)}")
+
+
+def _normalize_checks(raw: list[str] | None) -> list[str]:
+    checks = []
+    for item in raw or ["ping"]:
+        if item not in checks:
+            checks.append(item)
+    if "ping" not in checks:
+        checks.insert(0, "ping")
+    if not set(checks) <= ALLOWED_CHECKS:
+        raise HTTPException(400, "checks non validi")
+    return checks
+
+
+def _as_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def _is_ipv4(value: str) -> bool:
+    parts = value.split(".")
+    return len(parts) == 4 and all(part.isdigit() and int(part) <= 255 for part in parts)
 
 
 def _target(host: str, mac: str) -> tuple[str, str]:
@@ -229,10 +256,28 @@ def _devices_state():
         if value and value != "-":
             current_ip[r["device"]] = value
 
+    by_mac = {}
+    by_ip = {}
+    for neighbor in _neighbors():
+        network_name = neighbor.get("name") or ""
+        if not network_name:
+            continue
+        by_mac[neighbor["mac"]] = network_name
+        by_ip.setdefault(neighbor["ip"], network_name)
+
+    def _network_name(device: dict) -> str:
+        mac = _mac_or_empty(device.get("mac") or "")
+        if mac and mac in by_mac:
+            return by_mac[mac]
+        ip = current_ip.get(_device_id(device)) or ""
+        host = (device.get("host") or "").strip()
+        return by_ip.get(ip) or by_ip.get(host) or ""
+
     return [
         {
             "id": _device_id(d),
             "name": d["name"],
+            "network_name": _network_name(d),
             "host": d.get("host") or "",
             "mac": d.get("mac") or "",
             "current_ip": current_ip.get(_device_id(d)),
@@ -240,9 +285,74 @@ def _devices_state():
             "latency_ms": ping.get(_device_id(d), {}).get("rtt_avg"),
             "loss_pct": ping.get(_device_id(d), {}).get("loss"),
             "last_ping": ping.get(_device_id(d), {}).get("time"),
+            "checks": d.get("checks") or ["ping"],
         }
         for d in cfg
     ]
+
+
+def _uptime_report(hours: int):
+    hours = max(1, min(int(hours), 168))
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=hours)
+    baseline = {
+        r["device"]: r.get_value()
+        for r in _rows(f'''
+            from(bucket: "{BUCKET}") |> range(start: -30d, stop: -{hours}h)
+              |> filter(fn: (r) => r._measurement == "status" and r._field == "state")
+              |> group(columns: ["device"]) |> last()''')
+    }
+    events: dict[str, list[tuple[datetime, str]]] = {}
+    for r in _rows(f'''
+        from(bucket: "{BUCKET}") |> range(start: -{hours}h)
+          |> filter(fn: (r) => r._measurement == "status" and r._field == "state")
+          |> group(columns: ["device"])'''):
+        events.setdefault(r["device"], []).append((_as_utc(r.get_time()), r.get_value()))
+
+    devices = []
+    for device in _read_config()["devices"]:
+        device_id = _device_id(device)
+        points = sorted(events.get(device_id, []))
+        state = baseline.get(device_id)
+        if state is None and not points:
+            devices.append({"id": device_id, "uptime_pct": None, "segments": []})
+            continue
+        if state is None:
+            state = "UNKNOWN"
+        cursor = window_start
+        segments = []
+        up_seconds = 0.0
+        for moment, new_state in points:
+            if moment < window_start:
+                state = new_state
+                continue
+            if moment > now:
+                break
+            if moment > cursor:
+                segments.append({
+                    "start": cursor.isoformat(),
+                    "end": moment.isoformat(),
+                    "state": state,
+                })
+                if state == "UP":
+                    up_seconds += (moment - cursor).total_seconds()
+            state = new_state
+            cursor = max(cursor, moment)
+        if cursor < now:
+            segments.append({
+                "start": cursor.isoformat(),
+                "end": now.isoformat(),
+                "state": state,
+            })
+            if state == "UP":
+                up_seconds += (now - cursor).total_seconds()
+        total = (now - window_start).total_seconds()
+        devices.append({
+            "id": device_id,
+            "uptime_pct": round(100 * up_seconds / total, 1) if total else None,
+            "segments": segments,
+        })
+    return {"hours": hours, "devices": devices}
 
 
 @app.get("/neighbors")
@@ -274,9 +384,7 @@ def add_device(body: DeviceIn):
         raise HTTPException(400, "nome obbligatorio")
     if not DEVICE_NAME_RE.fullmatch(name):
         raise HTTPException(400, "nome non valido")
-    checks = body.checks or ["ping"]
-    if not set(checks) <= ALLOWED_CHECKS:
-        raise HTTPException(400, "checks non validi")
+    checks = _normalize_checks(body.checks)
 
     data = _read_config()
     if any(d.get("name") == name for d in data["devices"]):
@@ -300,6 +408,7 @@ def add_device(body: DeviceIn):
         "status": "LOADING",
         "latency_ms": None,
         "loss_pct": None,
+        "checks": checks,
     }
 
 
@@ -332,8 +441,18 @@ def update_device(device_id: str, body: DeviceUpdate):
         current["mac"] = mac
     else:
         current.pop("mac", None)
+    if body.checks is not None:
+        current["checks"] = _normalize_checks(body.checks)
+    elif not current.get("checks"):
+        current["checks"] = ["ping"]
     _write_config(data)
-    return {"id": device_id, "name": new_name, "host": host, "mac": mac}
+    return {
+        "id": device_id,
+        "name": new_name,
+        "host": host,
+        "mac": mac,
+        "checks": current.get("checks") or ["ping"],
+    }
 
 
 @app.delete("/devices")
@@ -354,6 +473,41 @@ def delete_devices(body: DeviceDelete):
     data["devices"] = kept
     _write_config(data)
     return {"removed": removed}
+
+
+@app.get("/radar")
+def radar():
+    known_macs = set()
+    known_ips = set()
+    for device in _read_config()["devices"]:
+        mac = _mac_or_empty(device.get("mac") or "")
+        if mac:
+            known_macs.add(mac)
+        host = (device.get("host") or "").strip()
+        if host and _is_ipv4(host):
+            known_ips.add(host)
+    for row in _rows(f'''
+        from(bucket: "{BUCKET}") |> range(start: -5m)
+          |> filter(fn: (r) => r._measurement == "current_ip" and r._field == "ip")
+          |> group(columns: ["device"]) |> last()'''):
+        value = row.get_value()
+        if value and value != "-" and _is_ipv4(str(value)):
+            known_ips.add(str(value))
+    seen = {}
+    for neighbor in _neighbors():
+        seen[neighbor["mac"]] = neighbor
+    unknown = [
+        {"mac": mac, "ip": item["ip"], "name": item.get("name") or ""}
+        for mac, item in seen.items()
+        if mac not in known_macs and item["ip"] not in known_ips
+    ]
+    unknown.sort(key=lambda item: tuple(int(part) for part in item["ip"].split(".")))
+    return {"seen": len(seen), "unknown": unknown}
+
+
+@app.get("/uptime")
+def uptime(hours: int = 24):
+    return _uptime_report(hours)
 
 
 @app.get("/summary")
@@ -416,5 +570,29 @@ def latency(device_id: str, hours: int | None = None, start: str | None = None, 
     '''
     tables = client.query_api().query(q)
     return [{"t": r.get_time().isoformat(), "ms": r.get_value()} for t in tables for r in t.records]
+
+
+@app.get("/devices/{device_id}/traffic")
+def traffic(device_id: str, hours: int | None = None, start: str | None = None, every: str = "5m"):
+    if not DEVICE_NAME_RE.fullmatch(device_id):
+        raise HTTPException(400, "id non valido")
+    range_start, window = _latency_range(hours, start, every)
+    slots = {}
+    for r in _rows(f'''
+        from(bucket: "{BUCKET}")
+          |> range(start: {range_start})
+          |> filter(fn: (r) => r._measurement == "traffic" and r.device == "{device_id}" and (r._field == "in_bps" or r._field == "out_bps"))
+          |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)'''):
+        iface = r.values.get("iface") or "traffic"
+        slots.setdefault((r.get_time(), iface), {})[r.get_field()] = r.get_value()
+    return [
+        {
+            "t": moment.isoformat(),
+            "iface": iface,
+            "in_bps": fields.get("in_bps"),
+            "out_bps": fields.get("out_bps"),
+        }
+        for (moment, iface), fields in sorted(slots.items(), key=lambda item: (item[0][0], item[0][1]))
+    ]
 
 # TODO: /logs

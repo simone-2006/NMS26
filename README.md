@@ -2,7 +2,7 @@
 
 Monitor della LAN. Tiene l'elenco dei dispositivi, li controlla con ping ICMP e mostra stato, latenza e storico dei cambi up/down.
 
-L'interfaccia è su [http://localhost:5173](http://localhost:5173). L'API è su [http://localhost:8000](http://localhost:8000), Grafana su [http://localhost:3000](http://localhost:3000), InfluxDB su [http://localhost:8086](http://localhost:8086).
+L'interfaccia è su [http://localhost:26173](http://localhost:26173). L'API è su [http://localhost:26800](http://localhost:26800), Grafana su [http://localhost:26300](http://localhost:26300), InfluxDB su [http://localhost:26886](http://localhost:26886).
 
 ## Avvio
 
