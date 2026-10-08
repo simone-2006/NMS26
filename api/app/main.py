@@ -29,6 +29,8 @@ INFLUX_ORG = _require_env("INFLUX_ORG")
 BUCKET = _require_env("INFLUX_BUCKET")
 DEVICES_PATH = "/config/devices.yml"
 ARP_CACHE_PATH = os.getenv("ARP_CACHE_PATH", "/config/arp-cache.txt")
+DHCP_LEASES_PATH = os.getenv("DHCP_LEASES_PATH", "").strip()
+ARP_FRESH_SECONDS = 90
 COLLECTOR_URL = os.getenv("COLLECTOR_URL", "http://collector:8010")
 LOSS_SAMPLES = max(1, int(os.getenv("DOWN_AFTER_FAILS", "3")))
 ALLOWED_CHECKS = {"ping", "snmp"}
@@ -125,31 +127,105 @@ def _normalize_mac(value: str) -> str:
     return mac
 
 
-def _neighbors():
+def _read_lines(path: str):
     try:
-        handle = open(ARP_CACHE_PATH, encoding="utf-8", errors="replace")
+        handle = open(path, encoding="utf-8", errors="replace")
     except OSError:
-        return []
-    found = []
+        return None
     with handle:
-        for line in handle:
-            mac = ip = ""
-            name_parts = []
-            for part in line.split():
-                if not ip and len(part.split(".")) == 4 and all(p.isdigit() and int(p) <= 255 for p in part.split(".")):
-                    if part.startswith(("224.", "239.", "255.")):
-                        continue
-                    ip = part
+        return handle.readlines()
+
+
+def _parse_arp_hosts(lines: list[str]) -> list[dict]:
+    found = []
+    for line in lines:
+        mac = ip = ""
+        name_parts = []
+        for part in line.split():
+            if not ip and len(part.split(".")) == 4 and all(p.isdigit() and int(p) <= 255 for p in part.split(".")):
+                if part.startswith(("224.", "239.", "255.")):
                     continue
-                if not mac:
-                    parsed = _mac_or_empty(part)
-                    if parsed and parsed not in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") and not parsed.startswith("01:00:5e"):
-                        mac = parsed
-                        continue
-                name_parts.append(part)
-            if mac and ip:
-                found.append({"mac": mac, "ip": ip, "name": " ".join(name_parts)})
+                ip = part
+                continue
+            if not mac:
+                parsed = _mac_or_empty(part)
+                if parsed and parsed not in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") and not parsed.startswith("01:00:5e"):
+                    mac = parsed
+                    continue
+            name_parts.append(part)
+        if mac and ip:
+            found.append({"mac": mac, "ip": ip, "name": " ".join(name_parts)})
     return found
+
+
+def _parse_lease_hosts(lines: list[str]) -> list[dict]:
+    now = datetime.now(timezone.utc).timestamp()
+    found = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3 or parts[0].startswith("#"):
+            continue
+        expiry, mac, ip = parts[0], _mac_or_empty(parts[1]), parts[2]
+        if not mac or not _is_ipv4(ip):
+            continue
+        if expiry.isdigit() and int(expiry) not in (0,) and int(expiry) < now:
+            continue
+        name = parts[3] if len(parts) > 3 and parts[3] != "*" else ""
+        found[mac] = {"mac": mac, "ip": ip, "name": name}
+    return list(found.values())
+
+
+def _file_clock(path: str):
+    try:
+        updated = datetime.fromtimestamp(os.stat(path).st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+    age = (datetime.now(timezone.utc) - updated).total_seconds()
+    return updated, age
+
+
+def _discovery() -> dict:
+    """Stato della fonte usata per elencare gli host della LAN.
+
+    I lease, se configurati, sono l'unica fonte, come nel collector.
+    Senza lease si legge la cache ARP. Una cache vecchia o vuota non
+    dimostra che ogni host sia già in inventario.
+    """
+    if DHCP_LEASES_PATH:
+        clock = _file_clock(DHCP_LEASES_PATH)
+        if clock is None:
+            return {"kind": "leases", "source": "missing", "updated_at": None, "hosts": []}
+        updated, _age = clock
+        lines = _read_lines(DHCP_LEASES_PATH) or []
+        hosts = _parse_lease_hosts(lines)
+        return {
+            "kind": "leases",
+            "source": "live" if hosts else "empty",
+            "updated_at": updated.isoformat(),
+            "hosts": hosts,
+        }
+
+    clock = _file_clock(ARP_CACHE_PATH)
+    if clock is None:
+        return {"kind": "arp", "source": "missing", "updated_at": None, "hosts": []}
+    updated, age = clock
+    hosts = _parse_arp_hosts(_read_lines(ARP_CACHE_PATH) or [])
+    if not hosts:
+        source = "empty"
+    elif age > ARP_FRESH_SECONDS:
+        source = "stale"
+    else:
+        source = "live"
+    return {
+        "kind": "arp",
+        "source": source,
+        "updated_at": updated.isoformat(),
+        "hosts": hosts,
+    }
+
+
+def _neighbors():
+    return _discovery()["hosts"]
 
 
 def _normalize_host(value: str) -> str:
@@ -360,7 +436,13 @@ def _uptime_report(hours: int):
 
 @app.get("/neighbors")
 def neighbors():
-    return _neighbors()
+    snap = _discovery()
+    return {
+        "kind": snap["kind"],
+        "source": snap["source"],
+        "updated_at": snap["updated_at"],
+        "hosts": snap["hosts"],
+    }
 
 
 @app.post("/check")
@@ -496,8 +578,9 @@ def radar():
         value = row.get_value()
         if value and value != "-" and _is_ipv4(str(value)):
             known_ips.add(str(value))
+    snap = _discovery()
     seen = {}
-    for neighbor in _neighbors():
+    for neighbor in snap["hosts"]:
         seen[neighbor["mac"]] = neighbor
     unknown = [
         {"mac": mac, "ip": item["ip"], "name": item.get("name") or ""}
@@ -505,7 +588,13 @@ def radar():
         if mac not in known_macs and item["ip"] not in known_ips
     ]
     unknown.sort(key=lambda item: tuple(int(part) for part in item["ip"].split(".")))
-    return {"seen": len(seen), "unknown": unknown}
+    return {
+        "kind": snap["kind"],
+        "source": snap["source"],
+        "updated_at": snap["updated_at"],
+        "seen": len(seen),
+        "unknown": unknown,
+    }
 
 
 @app.get("/uptime")

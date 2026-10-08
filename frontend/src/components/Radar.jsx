@@ -112,7 +112,38 @@ function clampPan(px, py, zoom, width, height) {
   };
 }
 
-export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
+function ageLabel(iso) {
+  if (!iso) return "";
+  const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  if (seconds < 45) return "updated just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `last write ${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return `last write ${hours} h ago`;
+}
+
+function discoveryNote({ kind, source, updatedAt, strangers, seenHint }) {
+  const where = kind === "leases" ? "DHCP leases" : "ARP cache";
+  const when = ageLabel(updatedAt);
+  if (source === "loading") return "Checking which LAN hosts are visible.";
+  if (source === "missing" || source === "empty" || (source == null && !(seenHint > 0))) {
+    return `No hosts in the ${where}. Devices with a host are still monitored. An empty list means that file has nothing to compare, not that every LAN host is already a device.`;
+  }
+  if (source === "stale" && strangers === 0) {
+    return `The ${where} is not updating${when ? ` (${when})` : ""}. An empty list does not mean every LAN host is already a device.`;
+  }
+  if (source === "stale") {
+    return `The ${where} is not updating${when ? ` (${when})` : ""}, so this list can be incomplete.`;
+  }
+  if (source === "live" && strangers === 0) return `Every host in the ${where} is already a device.`;
+  if (strangers === 0) {
+    return "This list is empty, but the LAN file is not a confirmed live view. That does not mean every host is already a device.";
+  }
+  return "";
+}
+
+export default function Radar({ devices, unknown, seen, kind = "arp", source = "loading", updatedAt, onOpen, onAdd }) {
   const map = layout(devices || []);
   const [hover, setHover] = useState(null);
   const [zoomStep, setZoomStep] = useState(2);
@@ -199,13 +230,14 @@ export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
     return compareIp(a.ip, b.ip);
   });
   const ordered = [...map.placed].sort((a, b) => Number(a.device.id === hover) - Number(b.device.id === hover));
+  const note = discoveryNote({ kind, source, updatedAt, strangers: strangers.length, seenHint: seen });
 
   return (
-    <div className="mt-6 rounded-lg bg-bg-secondary p-4">
+    <div className="mt-4 rounded-lg bg-bg-secondary p-3 sm:mt-6 sm:p-4">
       <div className="mb-3">
         <div className="text-lg font-bold text-text">Radar</div>
         <p className="text-sm text-text-secondary">
-          Devices you watch, and hosts seen on the LAN that are not in the inventory
+          Devices you watch. Hosts on the right come only from the LAN file the collector can read.
         </p>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
@@ -220,7 +252,7 @@ export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
                   aria-label="Zoom in"
                   disabled={zoomStep === ZOOMS.length - 1}
                   onClick={() => changeZoom(zoomStep + 1)}
-                  className="cursor-pointer px-2 py-0.5 text-sm font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
+                  className="cursor-pointer px-2.5 py-1.5 text-sm font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   +
                 </button>
@@ -229,7 +261,7 @@ export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
                   aria-label="Zoom out"
                   disabled={zoomStep === 0}
                   onClick={() => changeZoom(zoomStep - 1)}
-                  className="cursor-pointer border-t border-border px-2 py-0.5 text-sm font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
+                  className="cursor-pointer border-t border-border px-2.5 py-1.5 text-sm font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   −
                 </button>
@@ -303,15 +335,11 @@ export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
           <div className="lg:sticky lg:top-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
               Not in inventory
+              {seen > 0 && source === "live" ? ` · ${seen}` : ""}
             </p>
-            {seen === 0 && (
+            {note && (
               <p className="mt-2 text-xs leading-4 text-text-secondary">
-                The ARP table is empty. Keep the export script running.
-              </p>
-            )}
-            {seen > 0 && strangers.length === 0 && (
-              <p className="mt-2 text-xs leading-4 text-text-secondary">
-                Every host in the ARP table is already a device.
+                {note}
               </p>
             )}
             {strangers.length > 0 && (

@@ -44,6 +44,22 @@ function macKey(value) {
   return hex.length === 12 ? hex : "";
 }
 
+function hostsOf(payload) {
+  if (Array.isArray(payload)) return payload;
+  return Array.isArray(payload?.hosts) ? payload.hosts : [];
+}
+
+function metaOf(payload) {
+  if (!payload || Array.isArray(payload)) {
+    return { kind: "arp", source: "empty", updatedAt: null };
+  }
+  return {
+    kind: payload.kind || "arp",
+    source: payload.source || "empty",
+    updatedAt: payload.updated_at || null,
+  };
+}
+
 function compareIp(a, b) {
   const left = a.split(".").map(Number);
   const right = b.split(".").map(Number);
@@ -54,7 +70,7 @@ function compareIp(a, b) {
   return 0;
 }
 
-function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId, onRefresh, refreshing }) {
+function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId, onRefresh, refreshing, source }) {
   const [open, setOpen] = useState(false);
   const inputRef = useRef(null);
   const q = query.trim();
@@ -85,7 +101,7 @@ function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId, o
         <div>
           <p className="text-xs font-medium text-text">Find MAC from IP</p>
           <p className="mt-0.5 text-[11px] leading-4 text-text-secondary">
-            Search the ARP table. A result fills the MAC field only.
+            Search the hosts read from the LAN file. A result fills the MAC field only.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -93,7 +109,7 @@ function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId, o
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
-            aria-label="Refresh ARP table"
+            aria-label="Refresh LAN hosts"
             className="flex cursor-pointer items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[11px] font-medium text-text hover:bg-bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
           >
             <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
@@ -132,7 +148,14 @@ function MacLookup({ query, onQuery, neighbors, mac, onUse, devices, exceptId, o
       </div>
       {neighbors.length === 0 && (
         <p className="mt-2 text-[11px] leading-4 text-text-secondary">
-          The ARP table is empty. Keep the export script running.
+          {source === "stale"
+            ? "The LAN file is not updating, and it has no hosts to match. Type the MAC, or refresh after it is written again."
+            : "No hosts to match. Type the MAC, or refresh after the LAN file has entries. Devices with a host do not need this list."}
+        </p>
+      )}
+      {neighbors.length > 0 && source === "stale" && (
+        <p className="mt-2 text-[11px] leading-4 text-text-secondary">
+          This list is not updating. A missing IP may simply be absent from the file.
         </p>
       )}
       {neighbors.length > 0 && matches.length === 0 && (
@@ -439,14 +462,14 @@ function AlertTimeline({ alerts, showDevice = true, catalog }) {
                     <time className="w-16 shrink-0 text-xs text-text-secondary">
                       {a.when.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                     </time>
-                    <p className="text-sm">
+                    <p className="min-w-0 text-sm">
                       {showDevice && <span className="font-medium text-text">{a.device} </span>}
                       <span className={a.state === "UP" ? "text-text-success" : a.state === "DOWN" ? "text-text-error" : "text-text-secondary"}>
                         {historyPhrase(a.state)}
                       </span>
                     </p>
                   </div>
-                  {together && <p className="mt-0.5 pl-[4.75rem] text-xs text-text-secondary">{together}</p>}
+                  {together && <p className="mt-0.5 text-xs text-text-secondary sm:pl-[4.75rem]">{together}</p>}
                 </li>
               );
             })}
@@ -494,6 +517,81 @@ function LatencySpark({ points, status }) {
   );
 }
 
+function DeviceCards({ devices, selected, onToggle, uptimeById, uptimeHours, history, panel, detailId, editingId, onEdit, onDelete, onExpand }) {
+  if (devices.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2 lg:hidden">
+      {devices.map((d) => {
+        const open = (panel === "details" && detailId === d.id) || (panel === "edit" && editingId === d.id);
+        const ping = d.last_ping ? new Date(d.last_ping) : null;
+        const now = new Date();
+        const pingLabel = !ping
+          ? "–"
+          : ping.getFullYear() === now.getFullYear() && ping.getMonth() === now.getMonth() && ping.getDate() === now.getDate()
+            ? ping.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+            : ping.toLocaleString("it-IT");
+        return (
+          <article key={d.id} className={`rounded-lg border p-3 ${open ? "border-brand bg-brand/10" : "border-border bg-bg"}`}>
+            <div className="flex items-start justify-between gap-2">
+              <label className="flex min-w-0 items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={selected.has(d.id)}
+                  onChange={() => onToggle(d.id)}
+                  aria-label={`Seleziona ${d.name}`}
+                  className="size-4 shrink-0"
+                />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium text-text">{d.name}</span>
+                  {d.network_name && d.network_name !== d.name && (
+                    <span className="block truncate text-xs text-text-secondary">{d.network_name}</span>
+                  )}
+                </span>
+              </label>
+              <div className="flex shrink-0 items-center gap-1">
+                <StatusBadge status={d.status} />
+                <RowMenu device={d} onEdit={onEdit} onDelete={onDelete} onExpand={onExpand} />
+              </div>
+            </div>
+            <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+              <div className="min-w-0">
+                <dt className="text-text-secondary">Host</dt>
+                <dd className="truncate text-text">{d.host || "–"}</dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-text-secondary">Current IP</dt>
+                <dd className="truncate text-text">{d.current_ip || "–"}</dd>
+              </div>
+              <div className="col-span-2 min-w-0">
+                <dt className="text-text-secondary">MAC</dt>
+                <dd className="truncate font-mono text-text">{d.mac || "–"}</dd>
+              </div>
+              <div>
+                <dt className="text-text-secondary">Latency</dt>
+                <dd className="text-text">{d.latency_ms ?? "–"}{d.latency_ms != null ? " ms" : ""}</dd>
+              </div>
+              <div>
+                <dt className="text-text-secondary">Loss</dt>
+                <dd className="text-text">{d.loss_pct == null ? "–" : `${d.loss_pct}%`}</dd>
+              </div>
+            </dl>
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <UptimeStrip
+                segments={uptimeById[d.id]?.segments}
+                pct={uptimeById[d.id]?.uptime_pct}
+                hours={uptimeHours}
+              />
+              <LatencySpark points={history[d.id]} status={d.status} />
+            </div>
+            <p className="mt-2 text-[11px] text-text-secondary">Last ping {pingLabel}</p>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function App() {
   const [summary, setSummary] = useState(null);
   const [devices, setDevices] = useState([]);
@@ -504,6 +602,7 @@ export default function App() {
   const [host, setHost] = useState("");
   const [mac, setMac] = useState("");
   const [neighbors, setNeighbors] = useState([]);
+  const [neighborMeta, setNeighborMeta] = useState({ kind: "arp", source: "loading", updatedAt: null });
   const [neighborsTick, setNeighborsTick] = useState(0);
   const [neighborsLoading, setNeighborsLoading] = useState(false);
   const [lookupIp, setLookupIp] = useState("");
@@ -522,7 +621,7 @@ export default function App() {
   const [dataTick, setDataTick] = useState(0);
   const [snmpOn, setSnmpOn] = useState(false);
   const [uptime, setUptime] = useState(null);
-  const [radar, setRadar] = useState({ seen: 0, unknown: [] });
+  const [radar, setRadar] = useState({ seen: 0, unknown: [], kind: "arp", source: "loading", updated_at: null });
   const [trafficPoints, setTrafficPoints] = useState([]);
   const [trafficError, setTrafficError] = useState("");
 
@@ -550,6 +649,7 @@ export default function App() {
     setAlerts(nextAlerts);
     if (nextUptime) setUptime(nextUptime);
     if (nextRadar) setRadar(nextRadar);
+    else setRadar((prev) => (prev.source === "loading" ? { ...prev, source: "missing" } : prev));
     setHistory(Object.fromEntries(series));
     setSelected((prev) => new Set([...prev].filter((n) => alive.has(n))));
   }, []);
@@ -574,11 +674,17 @@ export default function App() {
     let stop = false;
     setNeighborsLoading(true);
     getNeighbors()
-      .then((rows) => {
-        if (!stop) setNeighbors(Array.isArray(rows) ? rows : []);
+      .then((payload) => {
+        if (!stop) {
+          setNeighbors(hostsOf(payload));
+          setNeighborMeta(metaOf(payload));
+        }
       })
       .catch(() => {
-        if (!stop) setNeighbors([]);
+        if (!stop) {
+          setNeighbors([]);
+          setNeighborMeta({ kind: "arp", source: "missing", updatedAt: null });
+        }
       })
       .finally(() => {
         if (!stop) setNeighborsLoading(false);
@@ -824,8 +930,9 @@ export default function App() {
       await checkDevices();
       await refresh();
       if (panel === "add" || panel === "edit") {
-        const rows = await getNeighbors().catch(() => []);
-        setNeighbors(Array.isArray(rows) ? rows : []);
+        const payload = await getNeighbors().catch(() => null);
+        setNeighbors(hostsOf(payload));
+        if (payload) setNeighborMeta(metaOf(payload));
       }
       setDataTick((n) => n + 1);
     } catch (err) {
@@ -843,41 +950,43 @@ export default function App() {
   const togetherNow = downTogether(detailDevice, alerts);
 
   return (
-    <div className="flex h-screen bg-bg">
-      <div className="min-w-0 flex-1 p-4 overflow-auto">
-        <div className="bg-bg-secondary rounded-lg p-4 flex flex-col">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-text font-bold text-2xl">NMS26 LAN Management System</span>
-              <button
-                type="button"
-                onClick={onUpdateAll}
-                disabled={checking}
-                className="flex cursor-pointer items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <RefreshCw size={12} className={checking ? "animate-spin" : ""} />
-                {checking ? "Checking…" : "Update all"}
-              </button>
+    <div className="flex h-dvh flex-col bg-bg md:flex-row">
+      <div className="min-w-0 flex-1 overflow-auto p-3 sm:p-4">
+        <div className="flex flex-col gap-3 rounded-lg bg-bg-secondary p-3 sm:p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xl font-bold leading-tight text-text sm:text-2xl">NMS26 LAN Management System</span>
+                <button
+                  type="button"
+                  onClick={onUpdateAll}
+                  disabled={checking}
+                  className="flex cursor-pointer items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RefreshCw size={12} className={checking ? "animate-spin" : ""} />
+                  {checking ? "Checking…" : "Update all"}
+                </button>
+              </div>
+              <span className="mt-1 block text-sm text-text-secondary">
+                View, add and manage your network devices
+              </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex max-w-full items-center gap-2 self-start">
               <span
-                className={`inline-block w-3 h-3 rounded-full border-2 border-white ${error ? "bg-text-error" : "bg-text-success"} transition-colors duration-150`}
+                className={`inline-block h-3 w-3 shrink-0 rounded-full border-2 border-white ${error ? "bg-text-error" : "bg-text-success"} transition-colors duration-150`}
                 title={error ? error : "Sistema attivo"}
               />
-              <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${error ? "bg-bg-error text-text-error" : "bg-bg-success text-text-success"} transition-colors duration-150`}>
+              <span className={`max-w-full truncate rounded-full px-2 py-0.5 text-xs font-medium ${error ? "bg-bg-error text-text-error" : "bg-bg-success text-text-success"} transition-colors duration-150`}>
                 {error ? error : "Service working"}
               </span>
             </div>
           </div>
-          <span className="text-text-secondary text-sm">
-            View, add and manage your network devices
-          </span>
         </div>
 
 
-        <div className="mt-4 bg-bg-secondary rounded-lg p-4 flex flex-col gap-4">
-          <div className="text-lg font-bold text-text mb-2">Summary</div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+        <div className="mt-4 flex flex-col gap-4 rounded-lg bg-bg-secondary p-3 sm:p-4">
+          <div className="mb-2 text-lg font-bold text-text">Summary</div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5 sm:gap-4">
             <div className="flex flex-col items-center">
               <span className="text-text text-sm">Total</span>
               <span className="text-2xl font-bold text-text">{summary?.total ?? "–"}</span>
@@ -894,13 +1003,13 @@ export default function App() {
               <span className="text-text text-sm">Unknown</span>
               <span className="text-2xl font-bold text-text">{summary?.unknown ?? "–"}</span>
             </div>
-            <div className="flex flex-col items-center">
+            <div className="col-span-2 flex flex-col items-center sm:col-span-1">
               <span className="text-text text-sm">Uptime 24h</span>
               <span className="text-2xl font-bold text-text">{avgUptime == null ? "–" : `${avgUptime}%`}</span>
             </div>
           </div>
 
-          <div className="mt-2 flex items-center justify-center text-text text-sm">
+          <div className="mt-2 flex flex-wrap items-center justify-center text-sm text-text">
             <span className="font-medium">Average latency:</span>&nbsp;
             <span className="font-bold">{summary?.avg_latency_ms ?? "–"} ms</span>
           </div>
@@ -910,16 +1019,19 @@ export default function App() {
           devices={devices}
           unknown={radar.unknown}
           seen={radar.seen}
+          kind={radar.kind}
+          source={radar.source}
+          updatedAt={radar.updated_at}
           onOpen={openDetails}
           onAdd={openDiscovered}
         />
 
         {/* Devices */}
-        <div className="mt-6 bg-bg-secondary rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-lg font-bold text-text mb-2">Devices</div>
+        <div className="mt-4 rounded-lg bg-bg-secondary p-3 sm:mt-6 sm:p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-lg font-bold text-text">Devices</div>
 
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={openAdd}
@@ -946,9 +1058,25 @@ export default function App() {
             </div>
 
           </div>
-          {actionError && <p className="text-text-error text-xs mb-2">{actionError}</p>}
+          {actionError && <p className="mb-2 text-xs text-text-error">{actionError}</p>}
+          {devices.length === 0 && <p className="text-sm text-text-secondary">No devices yet</p>}
 
-          <div className="overflow-x-auto">
+          <DeviceCards
+            devices={devices}
+            selected={selected}
+            onToggle={toggleSelected}
+            uptimeById={uptimeById}
+            uptimeHours={uptime?.hours || 24}
+            history={history}
+            panel={panel}
+            detailId={detailDevice?.id}
+            editingId={editing}
+            onEdit={openEdit}
+            onDelete={onDeleteOne}
+            onExpand={openDetails}
+          />
+
+          <div className="hidden overflow-x-auto lg:block">
             <table className="min-w-full text-sm text-left">
               <thead>
                 <tr className="border-b border-bg">
@@ -1038,7 +1166,7 @@ export default function App() {
 
 
 
-        <div className="mt-6 bg-bg-secondary rounded-lg p-4">
+        <div className="mt-4 rounded-lg bg-bg-secondary p-3 sm:mt-6 sm:p-4">
           <div className="mb-4">
             <div className="text-lg font-bold text-text">History</div>
             <p className="text-sm text-text-secondary">Status changes, newest first</p>
@@ -1048,9 +1176,11 @@ export default function App() {
       </div>
 
       <aside
-        className={`max-h-screen shrink-0 overflow-hidden bg-bg-secondary transition-[width] duration-200 ${panel === "details" ? "w-[36rem] border-l border-border" : panel ? "w-96 border-l border-border" : "w-0"}`}
+        className={panel
+          ? `fixed inset-0 z-40 w-full overflow-hidden bg-bg-secondary xl:static xl:z-auto xl:shrink-0 xl:border-l xl:border-border ${panel === "details" ? "xl:w-[36rem]" : "xl:w-96"}`
+          : "hidden"}
       >
-        <div className={`${panel === "details" ? "w-[36rem]" : "w-96"} h-screen max-h-screen p-4 overflow-auto`}>
+        <div className="h-dvh w-full overflow-auto p-4 md:max-h-screen">
           {(panel === "add" || panel === "edit") && (
             <>
               <div className="flex items-center justify-between mb-4">
@@ -1098,6 +1228,7 @@ export default function App() {
                   exceptId={editing}
                   onRefresh={() => setNeighborsTick((n) => n + 1)}
                   refreshing={neighborsLoading}
+                  source={neighborMeta.source}
                 />
                 <label className="flex items-start gap-2 text-sm text-text">
                   <input
