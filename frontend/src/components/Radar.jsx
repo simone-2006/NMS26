@@ -149,7 +149,6 @@ export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
       zoom,
       moved: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function onPointerMove(event) {
@@ -158,7 +157,10 @@ export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
     const dx = event.clientX - drag.x;
     const dy = event.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-    if (!drag.moved) setDragging(true);
+    if (!drag.moved) {
+      setDragging(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
     drag.moved = true;
     const rect = event.currentTarget.getBoundingClientRect();
     if (drag.zoom < 1) {
@@ -211,7 +213,7 @@ export default function Radar({ devices, unknown, seen, onOpen, onAdd }) {
           {devices.length === 0 ? (
             <p className="text-sm text-text-secondary">No devices yet</p>
           ) : (
-            <div className="relative w-full">
+            <div className="relative w-full z-1000">
               <div className="absolute top-2 right-2 z-10 flex flex-col overflow-hidden rounded-lg border border-border bg-bg-secondary">
                 <button
                   type="button"
