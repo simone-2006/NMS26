@@ -5,5 +5,9 @@ node_modules/
 dist/
 utile
 config/devices.yml
+config/devices.yml.tmp
 config/arp-cache.txt
 config/lan-names.txt
+.DS_Store
+Thumbs.db
+*.log

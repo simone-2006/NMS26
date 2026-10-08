@@ -8,10 +8,11 @@ L'interfaccia è su [http://localhost:26173](http://localhost:26173). L'API è s
 
 ```bash
 cp .env.example .env
+cp config/devices.example.yml config/devices.yml
 docker compose up -d --build
 ```
 
-Nel `.env` vanno cambiati almeno `INFLUX_PASSWORD` e `INFLUX_TOKEN` prima del primo avvio: InfluxDB li usa solo in fase di setup. I dispositivi stanno in `config/devices.yml`. L'interfaccia li legge e li scrive tramite l'API.
+Nel `.env` vanno cambiati almeno `INFLUX_PASSWORD` e `INFLUX_TOKEN` prima del primo avvio: InfluxDB li usa solo in fase di setup. I dispositivi stanno in `config/devices.yml`, a partire dall'esempio. L'interfaccia li legge e li scrive tramite l'API. Quel file, insieme a `config/arp-cache.txt` e `config/lan-names.txt`, è nel `.gitignore`: l'inventario della LAN non va nel repository.
 
 Il frontend è montato dal disco e si aggiorna da solo. API e collector sono nell'immagine: dopo una modifica al loro codice serve `docker compose up -d --build api collector`.
 
@@ -89,3 +90,11 @@ Copiate da `.env.example`.
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Notifiche. Vuoti: solo log |
 | `DHCP_LEASES_PATH` | File lease dnsmasq dentro il container. Se è impostato, l'ARP dell'host non viene usato |
 | `ARP_CACHE_PATH` | File `mac ip` letto dal collector. Default: `/config/arp-cache.txt` |
+
+## Rete
+
+Non c'è login. L'API può leggere e riscrivere l'elenco dei dispositivi, e InfluxDB risponde con il token del `.env`. Va tenuto sulla macchina che lo esegue, oppure su una LAN di cui ti fidi. Non inoltrare verso Internet le porte `26173` (interfaccia), `26800` (API), `26300` (Grafana) e `26886` (InfluxDB).
+
+## Licenza
+
+MIT. Vedi [LICENSE](LICENSE).

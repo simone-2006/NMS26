@@ -30,5 +30,12 @@ SNMP_COMMUNITY = os.getenv("SNMP_COMMUNITY", "public")
 
 
 def load_devices(path="/config/devices.yml"):
-    with open(path) as f:
-        return yaml.safe_load(f)["devices"]
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    devices = data.get("devices") or []
+    return devices if isinstance(devices, list) else []

@@ -1,0 +1,20 @@
+# Copia questo file in config/devices.yml e sostituisci gli indirizzi.
+# devices.yml, arp-cache.txt e lan-names.txt restano fuori da git.
+
+devices:
+  - name: router
+    host: 192.168.1.1
+    checks:
+      - ping
+
+  - name: nas
+    host: nas.lan
+    checks:
+      - ping
+      - snmp
+
+  # Senza host il collector cerca il MAC nei lease DHCP o in arp-cache.txt.
+  - name: laptop
+    mac: "aa:bb:cc:dd:ee:ff"
+    checks:
+      - ping

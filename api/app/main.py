@@ -67,18 +67,21 @@ def _rows(flux, params=None):
 
 
 def _read_config():
-    with open(DEVICES_PATH) as f:
-        data = yaml.safe_load(f) or {}
+    try:
+        with open(DEVICES_PATH, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        data = {}
     if not isinstance(data, dict):
         data = {}
     devices = data.get("devices") or []
-    data["devices"] = devices
+    data["devices"] = devices if isinstance(devices, list) else []
     return data
 
 
 def _write_config(data):
     tmp = DEVICES_PATH + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
     os.replace(tmp, DEVICES_PATH)
 

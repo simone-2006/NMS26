@@ -19,3 +19,24 @@
     --color-text-success: #36B37E;
     --color-bg-success: #E6F9EC;
 }
+
+/* Dark mode preparation */
+/* @theme .dark {
+    --color-brand: #339CFF;
+    --color-brand-secondary: #5BB5FF;
+    --color-bg: #1A1A1A;
+    --color-bg-secondary: #212121;
+    --color-bg-tertiary: #3A3A3A;
+    --color-text: #F3F3F3;
+    --color-text-secondary: #C1C1C1;
+    --color-border: #333841;
+
+    --color-text-danger: #FF9533;
+    --color-bg-danger: #352303;
+
+    --color-text-error: #FF5A5A;
+    --color-bg-error: #3B1D24;
+
+    --color-text-success: #7FF5BA;
+    --color-bg-success: #133D29;
+} */

@@ -783,7 +783,7 @@ export default function App() {
   async function onDelete() {
     if (selected.size === 0) return;
     const ids = [...selected];
-    if (!window.confirm(`Eliminare ${ids.length} device?`)) return;
+    if (!window.confirm(`Delete ${ids.length} device?`)) return;
     setSaving(true);
     setActionError("");
     try {
@@ -798,7 +798,7 @@ export default function App() {
   }
 
   async function onDeleteOne(device) {
-    if (!window.confirm(`Eliminare ${device.name}?`)) return;
+    if (!window.confirm(`Delete ${device.name}?`)) return;
     setSaving(true);
     setActionError("");
     try {
