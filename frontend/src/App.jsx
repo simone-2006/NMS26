@@ -951,7 +951,7 @@ export default function App() {
 
   return (
     <div className="flex h-dvh flex-col bg-bg md:flex-row">
-      <div className="min-w-0 flex-1 overflow-auto p-3 sm:p-4">
+      <div className={`relative z-0 min-w-0 flex-1 overflow-auto p-3 sm:p-4 ${panel ? "max-xl:hidden" : ""}`}>
         <div className="flex flex-col gap-3 rounded-lg bg-bg-secondary p-3 sm:p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
@@ -1106,7 +1106,7 @@ export default function App() {
                       aria-current={openInSidebar ? "true" : undefined}
                       className={`border-b last:border-b-0 border-bg transition-colors ${openInSidebar ? "bg-brand/10" : ""}`}
                     >
-                      <td className="py-2 px-4">
+                      <td className="py-2 px-4 text-text">
                         <input
                           type="checkbox"
                           checked={selected.has(d.id)}
@@ -1114,12 +1114,12 @@ export default function App() {
                           aria-label={`Seleziona ${d.name}`}
                         />
                       </td>
-                      <td className="py-2 px-4">{d.name}</td>
-                      <td className="py-2 px-4">{d.network_name || "–"}</td>
-                      <td className="py-2 px-4">{d.host || "–"}</td>
-                      <td className="py-2 px-4">{d.mac || "–"}</td>
-                      <td className="py-2 px-4">{d.current_ip || "–"}</td>
-                      <td className="py-2 px-4">
+                      <td className="py-2 px-4 text-text">{d.name}</td>
+                      <td className="py-2 px-4 text-text">{d.network_name || "–"}</td>
+                      <td className="py-2 px-4 text-text">{d.host || "–"}</td>
+                      <td className="py-2 px-4 text-text">{d.mac || "–"}</td>
+                      <td className="py-2 px-4 text-text">{d.current_ip || "–"}</td>
+                      <td className="py-2 px-4 text-text">
                         <StatusBadge status={d.status} />
                       </td>
                       <td className="py-2 px-4">{d.latency_ms ?? "–"}</td>
@@ -1177,7 +1177,7 @@ export default function App() {
 
       <aside
         className={panel
-          ? `fixed inset-0 z-40 w-full overflow-hidden bg-bg-secondary xl:static xl:z-auto xl:shrink-0 xl:border-l xl:border-border ${panel === "details" ? "xl:w-[36rem]" : "xl:w-96"}`
+          ? `fixed inset-0 z-50 w-full overflow-hidden bg-bg-secondary xl:static xl:z-auto xl:shrink-0 xl:border-l xl:border-border ${panel === "details" ? "xl:w-[36rem]" : "xl:w-96"}`
           : "hidden"}
       >
         <div className="h-dvh w-full overflow-auto p-4 md:max-h-screen">

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { ZoomIn, ZoomOut } from "lucide-react";
 
 function compareIp(a, b) {
   const left = a.split(".").map(Number);
@@ -245,7 +246,7 @@ export default function Radar({ devices, unknown, seen, kind = "arp", source = "
           {devices.length === 0 ? (
             <p className="text-sm text-text-secondary">No devices yet</p>
           ) : (
-            <div className="relative w-full z-1000">
+            <div className="relative w-full">
               <div className="absolute top-2 right-2 z-10 flex flex-col overflow-hidden rounded-lg border border-border bg-bg-secondary">
                 <button
                   type="button"
@@ -254,7 +255,7 @@ export default function Radar({ devices, unknown, seen, kind = "arp", source = "
                   onClick={() => changeZoom(zoomStep + 1)}
                   className="cursor-pointer px-2.5 py-1.5 text-sm font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  +
+                  <ZoomIn size={14} />
                 </button>
                 <button
                   type="button"
@@ -263,7 +264,7 @@ export default function Radar({ devices, unknown, seen, kind = "arp", source = "
                   onClick={() => changeZoom(zoomStep - 1)}
                   className="cursor-pointer border-t border-border px-2.5 py-1.5 text-sm font-medium text-text hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  −
+                  <ZoomOut size={14} />
                 </button>
               </div>
               <svg
